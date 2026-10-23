@@ -11,6 +11,7 @@ class Settings:
     mode: str = "improved"
     embedding_backend: str = "sentence-transformers"
     embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
+    index_variants: str = "both"
     answer_backend: str = "opencode"
     chunk_tokens: int = 400
     overlap_tokens: int = 60
@@ -38,6 +39,8 @@ class Settings:
             raise ValueError("Unsupported embedding backend")
         if self.answer_backend not in {"extractive", "opencode"}:
             raise ValueError("Unsupported answer backend")
+        if self.index_variants not in {"both", "full", "compact"}:
+            raise ValueError("index_variants must be both, full or compact")
         if not 0 <= self.overlap_tokens < self.chunk_tokens:
             raise ValueError("overlap_tokens must be less than chunk_tokens")
         for name in ("chunk_tokens", "sketch_tokens", "top_k", "candidate_k", "broad_k", "context_tokens",

@@ -9,6 +9,8 @@ from .embedding import Embedder
 from .generation import check_citations, generate
 from .ingestion import extract_document, read_zip
 from .metadata import route
+from .search import BM25, rank
+from .sketches import make_sketches
 from .storage import Store, validate_collection
 from .text import tokens
 
@@ -44,13 +46,25 @@ class KnowledgeBase:
                 errors.append({"document": name, "error": str(e)})
         if not chunks:
             raise ValueError(f"No readable PDFs: {errors}")
-        vectors, usage = self.embedder.encode([c["text"] for c in chunks])
+        make_sketches(chunks, self.settings.sketch_tokens)
+        vectors, usages = {}, {}
+        variants = ("full", "compact") if self.settings.index_variants == "both" else (self.settings.index_variants,)
+        for variant in variants:
+            field = "text" if variant == "full" else "sketch"
+            vectors[variant], usages[variant] = self.embedder.encode([c[field] for c in chunks])
+        full_tokens = sum(self.embedder.count(c["text"]) for c in chunks)
+        compact_tokens = sum(self.embedder.count(c["sketch"]) for c in chunks)
         stats = {"documents": len(metadata), "chunks": len(chunks), "errors": errors,
-                 "full_embedding": usage, "indexing_seconds": time.perf_counter() - started}
+                 "full_embedding": usages.get("full"), "compact_embedding": usages.get("compact"),
+                 "full_logical_tokens": full_tokens, "compact_logical_tokens": compact_tokens,
+                 "embedding_token_reduction_percent": 100 * (1 - compact_tokens / max(1, full_tokens)),
+                 "actual_computed_embedding_tokens": sum(u["computed_input_tokens"] for u in usages.values()),
+                 "index_variants": list(variants), "sketch_llm_input_tokens": 0, "sketch_llm_output_tokens": 0,
+                 "indexing_seconds": time.perf_counter() - started}
         payload = {"schema_version": 1, "embedding_identity": self.embedder.identity,
-                   "documents": metadata, "chunks": chunks, "statistics": stats,
+                   "documents": metadata, "chunks": chunks, "bm25": BM25.build(chunks), "statistics": stats,
                    "settings": self.settings.json()}
-        self.store.save(collection, payload, {"full": vectors}, raw)
+        self.store.save(collection, payload, vectors, raw)
         return {"status": "success", "collection_name": collection, "statistics": stats}
 
     def load(self, collection):
@@ -66,21 +80,26 @@ class KnowledgeBase:
 
     def retrieve(self, question, payload, vectors, settings, trace):
         query, usage = self.embedder.encode([question])
-        scores = vectors["full"] @ query[0]
+        variant = "compact" if settings.compact_embeddings else "full"
+        if variant not in vectors:
+            raise ValueError(f"Index has no {variant} vectors; reindex with KB_INDEX_VARIANTS=both")
+        scores = vectors[variant] @ query[0]
+        allowed = np.ones(len(scores), dtype=bool)
         if settings.metadata_routing:
             routing = route(question, payload["documents"])
-            allowed = set(routing["document_ids"])
-            scores = np.where([c["document_id"] in allowed for c in payload["chunks"]], scores, -np.inf)
+            doc_ids = set(routing["document_ids"])
+            allowed = np.array([c["document_id"] in doc_ids for c in payload["chunks"]])
             trace.append(step("metadata_filter", "Route by entity, reporting period and document type", {"question": question}, routing))
-        ranked = np.argsort(-scores, kind="stable")[:settings.top_k]
+        lexical = BM25(payload["bm25"]).scores(question) if settings.hybrid_search else np.zeros(len(scores))
+        ranked = rank(scores, lexical, allowed, settings.candidate_k, settings.hybrid_search)[:settings.top_k]
         selected, used = [], 0
-        for i in ranked:
+        for i, score in ranked:
             chunk = payload["chunks"][int(i)]
             cost = len(tokens(chunk["text"]))
-            if scores[i] > 0 and used + cost <= settings.context_tokens:
-                selected.append({**chunk, "score": float(scores[i])})
+            if used + cost <= settings.context_tokens:
+                selected.append({**chunk, "score": score})
                 used += cost
-        trace.append(step("similarity_search", "Full-chunk vector similarity search", {"top_k": settings.top_k},
+        trace.append(step("similarity_search", "Vector search with optional original-text BM25 fusion", {"top_k": settings.top_k, "variant": variant, "hybrid": settings.hybrid_search},
                           {"chunk_ids": [c["chunk_id"] for c in selected]}))
         return selected, {"query_embedding": usage, "context_tokens": used}
 
