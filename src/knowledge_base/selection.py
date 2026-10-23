@@ -1,8 +1,9 @@
 """Transparent greedy marginal coverage under a context budget."""
 import re
+from functools import lru_cache
 
 from .planning import covers
-from .text import terms, tokens
+from .text import term_set, tokens
 
 
 def evidence_cost(chunk):
@@ -10,6 +11,7 @@ def evidence_cost(chunk):
     return len(tokens(f"[{chunk['chunk_id']}] {chunk['document']} pages {chunk['page_numbers']}\n{chunk['text']}"))
 
 
+@lru_cache(maxsize=32768)
 def protected_facts(text):
     numbers = tuple(re.findall(r"\d[\d,.]*(?:%|\b)", text))
     entities = frozenset(re.findall(r"\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+\b|\b[A-Z]{2,}\b", text))
@@ -22,7 +24,7 @@ def redundancy(a, b):
         return 0.0
     if a["text"] == b["text"]:
         return 1.0
-    first, second = set(terms(a["text"])), set(terms(b["text"]))
+    first, second = term_set(a["text"]), term_set(b["text"])
     return len(first & second) / max(1, len(first | second))
 
 
@@ -38,7 +40,7 @@ def select_evidence(candidates, requirements, budget, limit):
                 continue
             coverage = {r["id"] for r in requirements if covers(chunk, r)}
             duplicate = max((redundancy(chunk, previous) for previous in selected), default=0)
-            words = set(terms(chunk["text"]))
+            words = term_set(chunk["text"])
             novelty = len(words - seen_terms) / max(1, len(words))
             marginal = (chunk["score"] / relevance_scale + 1.5 * len(coverage - covered)
                         + .4 * novelty - .8 * duplicate)

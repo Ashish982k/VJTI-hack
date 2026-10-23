@@ -4,7 +4,7 @@ import re
 
 import numpy as np
 
-from .text import terms
+from .text import terms, term_set
 
 
 def classify(question):
@@ -65,7 +65,7 @@ def covers(chunk, requirement):
     if requirement["kind"] == "section":
         return chunk["section_heading"] == requirement["section_heading"]
     needed = set(requirement["terms"])
-    return len(needed & set(terms(chunk["text"]))) >= max(1, min(3, len(needed) // 2))
+    return len(needed & term_set(chunk["text"])) >= max(1, min(3, len(needed) // 2))
 
 
 def expand_candidates(question, chunks, dense, sparse_index, allowed, initial, requirements, settings):

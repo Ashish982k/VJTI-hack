@@ -10,6 +10,7 @@ from .metadata import document_metadata, page_heading
 
 def read_zip(source, settings):
     documents = []
+    seen = set()
     with zipfile.ZipFile(source) as archive:
         members = archive.infolist()
         if len(members) > settings.max_files:
@@ -23,6 +24,9 @@ def read_zip(source, settings):
             if (info.external_attr >> 16) & 0o170000 == 0o120000:
                 raise ValueError("ZIP symlinks are not supported")
             if not info.is_dir() and path.suffix.lower() == ".pdf":
+                if str(path).casefold() in seen:
+                    raise ValueError("ZIP contains duplicate PDF paths")
+                seen.add(str(path).casefold())
                 documents.append((str(path), archive.read(info)))
     if not documents:
         raise ValueError("ZIP contains no PDFs")

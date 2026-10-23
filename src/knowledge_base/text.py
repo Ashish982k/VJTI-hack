@@ -1,5 +1,6 @@
 import hashlib
 import re
+from functools import lru_cache
 
 TOKEN_RE = re.compile(r"\w+|[^\w\s]", re.UNICODE)
 STOP = set("the a an of and or to in for on with by from is are was were as at this that it its be has have how what which all every please report annual company limited year".split())
@@ -12,6 +13,11 @@ def tokens(text):
 
 def terms(text):
     return [t.lower() for t in tokens(text) if len(t) > 1 and t.isalnum() and t.lower() not in STOP]
+
+
+@lru_cache(maxsize=32768)
+def term_set(text):
+    return frozenset(terms(text))
 
 
 def digest(text):

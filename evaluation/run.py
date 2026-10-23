@@ -11,7 +11,8 @@ import time
 
 from knowledge_base.config import Settings
 from knowledge_base.pipeline import KnowledgeBase
-from knowledge_base.text import terms
+from knowledge_base.text import terms, term_set
+from knowledge_base.selection import protected_facts
 from .official_adapter import load_official, OFFICIAL_SHA256
 
 
@@ -79,6 +80,9 @@ def main():
     # All experiments get identical warm embedding/model/index caches. Warmup spend is reported.
     started = time.perf_counter()
     _, warmup_usage = kb.embedder.encode([r["question"] for r in rows])
+    for chunk in payload["chunks"]:
+        term_set(chunk["text"])
+        protected_facts(chunk["text"])
     warmup_seconds = time.perf_counter() - started
     args.output.mkdir(parents=True, exist_ok=True)
     all_summary = []
@@ -87,6 +91,8 @@ def main():
         if letter not in args.experiments:
             continue
         evaluated, details, failures = [], [], []
+        # Explicitly replace per-experiment output; reruns never append duplicate results.
+        (args.output / f"{letter}-responses.jsonl").write_text("", encoding="utf-8")
         for i, row in enumerate(rows):
             try:
                 response = kb.query(args.collection, row["question"], config)

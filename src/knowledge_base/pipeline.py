@@ -7,7 +7,7 @@ import numpy as np
 
 from .config import Settings
 from .embedding import Embedder
-from .generation import check_citations, generate
+from .generation import generate, verified_answer
 from .ingestion import extract_document, read_zip
 from .metadata import route
 from .planning import classify, covers, evidence_requirements, expand_candidates
@@ -174,9 +174,10 @@ class KnowledgeBase:
                                    cost_details={k: v for k, v in {"input": costs["llm_input_usd"], "output": costs["llm_output_usd"]}.items() if v is not None})
         stats["generation_seconds"] = time.perf_counter() - generation_started
         trace.append(step("llm_answer_generation", "Answer from original cited passages", {"chunk_ids": [c["chunk_id"] for c in chunks]}, {"answer": answer}))
-        checks = check_citations(answer, chunks)
+        answer, checks = verified_answer(answer, chunks, settings.answer_backend)
         trace.append(step("citation_checks", "Validate citation identifiers (not a semantic proof)", {"answer": answer}, checks))
         stats.update(generation_usage)
+        stats["support_check_action"] = checks["action"]
         stats.update({"query_seconds": time.perf_counter() - started, "mode": settings.mode,
                       "planning_llm_input_tokens": 0, "planning_llm_output_tokens": 0})
         return {"answer": answer, "chunks": chunks, "trace": trace, "statistics": stats}
