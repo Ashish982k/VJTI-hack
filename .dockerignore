@@ -1,0 +1,10 @@
+.git
+.venv
+.env
+Train
+Train.zip
+data
+models
+reports
+*.docx
+*.jsonl

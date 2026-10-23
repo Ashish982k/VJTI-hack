@@ -1,0 +1,15 @@
+{
+  "python": "3.11.0",
+  "platform": "Windows-10-10.0.26200-SP0",
+  "packages": {
+    "fastapi": "0.141.1",
+    "pymupdf": "1.28.0",
+    "numpy": "2.4.6",
+    "sentence-transformers": "5.6.1",
+    "torch": "2.5.1+cu121",
+    "transformers": "5.14.1",
+    "langfuse": "4.18.0",
+    "httpx": "0.28.1",
+    "uvicorn": "0.52.0"
+  }
+}
