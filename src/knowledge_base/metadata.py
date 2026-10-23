@@ -24,32 +24,55 @@ def document_metadata(filename, cover_text):
     stem = PurePosixPath(filename).stem
     expanded = re.sub(r"(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])", " ", stem)
     name = expanded.replace("_", " ")
-    identified = periods(name)
-    if not identified:
-        short_year = re.search(r"\b(?:FY|AR)[ -]?(\d{2})(?!\d)", name, re.I)
-        identified = [(2000 + int(short_year[1]), 2000 + int(short_year[1]))] if short_year else periods(cover_text[:1800])
     combined = name + " " + cover_text[:1500]
     doc_type = next((kind for pattern, kind in [
         (r"annual\s*report|\bar[- ]?\d", "annual report"), (r"handbook", "handbook"),
         (r"standard|framework|committee", "regulatory standard"), (r"memo", "memorandum"),
         (r"technical|model|paper", "technical paper")]
         if re.search(pattern, combined, re.I)), "document")
+    # Numeric paper IDs and unrelated citations are not reporting periods.
+    identified = periods(name) if not re.search(r"\d{4}\.\d+|\d+\.\d+[_/]|\d{4}-\d{3,}", name) else []
+    period_source = "filename" if identified else "unknown"
+    if not identified:
+        short_year = re.search(r"\b(?:FY|AR)[ -]?(\d{2})(?!\d)", name, re.I)
+        compact_year = re.search(r"(?i)(?:report|FY)\s*(\d{2})(\d{2})(?:\D|$)", name)
+        if short_year:
+            year = 2000 + int(short_year[1])
+            identified, period_source = [(year, year)], "filename"
+        elif compact_year and int(compact_year[2]) == int(compact_year[1]) + 1:
+            identified, period_source = [(2000 + int(compact_year[1]), 2000 + int(compact_year[2]))], "filename"
+        else:
+            lines = cover_text[:1800].splitlines()
+            contextual = []
+            for i, line in enumerate(lines):
+                if re.search(r"(?i)annual\s*report|financial\s*year|year\s*ended|published|issued|revised|january|february|march|april|may|june|july|august|september|october|november|december", line):
+                    contextual.extend(periods(" ".join(lines[max(0, i - 1):i + 3])))
+            # Ambiguous cover dates remain unknown rather than becoming hard filters.
+            distinct = sorted(set(contextual))
+            if len(distinct) == 1:
+                identified, period_source = distinct, "cover_date_context"
     company = ""
     if doc_type == "annual report":
         company = re.sub(r"(?i)integrated|annual\s*report|\bFY\b|\bar\b|\bre\b", " ", name)
         company = YEAR.sub(" ", company)
         company = re.sub(r"\d+|[-()]", " ", company)
+        company = re.sub(r"(?i)\bre\b", " ", company)
         company = re.sub(r"\s+", " ", company).strip()
     if not company:
         # A title-like organization line, never arbitrary body entities.
-        for line in cover_text.splitlines()[:25]:
+        lines = cover_text.splitlines()[:25]
+        for i, line in enumerate(lines):
+            if "@" in line or "http" in line.lower():
+                continue
             if re.search(r"\b(limited|ltd\.?|corporation|committee|authority|bank)\b", line, re.I) and 2 <= len(line.split()) <= 12:
                 company = line.strip()
+                if company.lower().endswith((" on", " of", " for")) and i + 1 < len(lines):
+                    company += " " + lines[i + 1].strip()
                 break
-    aliases = sorted(set(terms(company)) - {"india", "industries", "inc", "ltd", "group", "corporation"})
+    aliases = sorted(set(terms(company)) - {"india", "industries", "inc", "ltd", "group", "corporation", "bank", "banking", "committee", "supervision", "authority"})
     return {"company": company, "periods": [f"{a}-{b}" if a != b else str(a) for a, b in identified],
             "reporting_years": sorted({b for _, b in identified}), "document_type": doc_type,
-            "aliases": aliases, "metadata_source": "filename_and_cover_rules"}
+            "aliases": aliases, "metadata_source": "filename_and_cover_rules", "period_source": period_source}
 
 
 def page_heading(text, fallback):

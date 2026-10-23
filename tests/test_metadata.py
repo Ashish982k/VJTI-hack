@@ -22,3 +22,15 @@ class MetadataTests(unittest.TestCase):
         documents = [doc("Acme_Annual Report FY 2025.pdf", "old"), doc("Beta handbook.pdf", "unknown")]
         self.assertEqual(len(route("What are the risks?", documents)["document_ids"]), 2)
         self.assertEqual(route("Acme 2030 debt", documents)["document_ids"], ["old"])
+
+    def test_cover_references_and_email_are_not_identity(self):
+        meta = document_metadata("research.pdf", "author@research-bank.com\nReferences 1973, 1992\nPublished March 2025\n")
+        self.assertEqual(meta["company"], "")
+        self.assertEqual(meta["reporting_years"], [])  # nearby dates are ambiguous
+        meta = document_metadata("2012.12345.pdf", "A Research Paper\nAuthor Name\n")
+        self.assertEqual(meta["period_source"], "unknown")
+
+    def test_compact_report_year_and_version_suffix(self):
+        meta = document_metadata("AcmeIntegratedAnnualReport2526Re.pdf", "Annual Report\n1979 incorporated\n")
+        self.assertEqual(meta["reporting_years"], [2026])
+        self.assertEqual(meta["company"], "Acme")
