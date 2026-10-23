@@ -8,6 +8,7 @@ from .config import Settings
 from .embedding import Embedder
 from .generation import check_citations, generate
 from .ingestion import extract_document, read_zip
+from .metadata import route
 from .storage import Store, validate_collection
 from .text import tokens
 
@@ -66,6 +67,11 @@ class KnowledgeBase:
     def retrieve(self, question, payload, vectors, settings, trace):
         query, usage = self.embedder.encode([question])
         scores = vectors["full"] @ query[0]
+        if settings.metadata_routing:
+            routing = route(question, payload["documents"])
+            allowed = set(routing["document_ids"])
+            scores = np.where([c["document_id"] in allowed for c in payload["chunks"]], scores, -np.inf)
+            trace.append(step("metadata_filter", "Route by entity, reporting period and document type", {"question": question}, routing))
         ranked = np.argsort(-scores, kind="stable")[:settings.top_k]
         selected, used = [], 0
         for i in ranked:

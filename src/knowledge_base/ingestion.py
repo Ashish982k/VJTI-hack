@@ -5,6 +5,7 @@ import zipfile
 import pymupdf
 
 from .text import chunk_text, digest
+from .metadata import document_metadata, page_heading
 
 
 def read_zip(source, settings):
@@ -40,14 +41,17 @@ def extract_document(filename, content, collection, settings):
         raise ValueError("PDF has no extractable text; OCR is required")
     metadata = {"document_id": doc_id, "document": filename, "company": "", "periods": [],
                 "document_type": "document", "collection_name": collection}
+    metadata.update(document_metadata(filename, "\n".join(p["text"] for p in pages[:3])))
     chunks = []
     heading = "Document"
     for page in pages:
         for _, title, number in toc:
             if number == page["number"]:
-                heading = title
+                if not title.lower().endswith(".pdf"):
+                    heading = title
+        section = page_heading(page["text"], heading)
         for index, text in enumerate(chunk_text(page["text"], settings.chunk_tokens, settings.overlap_tokens)):
             chunks.append({**metadata, "chunk_id": f"{doc_id}:{page['number']}:{index}", "text": text,
                            "page_numbers": [page["number"]], "page_label": page["label"],
-                           "section_heading": heading})
+                           "section_heading": section})
     return {**metadata, "pages": len(pages), "empty_pages": [p["number"] for p in pages if not p["text"].strip()]}, chunks
