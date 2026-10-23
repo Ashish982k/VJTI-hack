@@ -33,6 +33,7 @@ def main():
     else:
         result = kb.query(args.collection, args.question)
     print(json.dumps(result, indent=2, ensure_ascii=True))
+    kb.telemetry.flush()
 
 
 if __name__ == "__main__":

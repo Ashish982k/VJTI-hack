@@ -1,4 +1,5 @@
 import io
+import os
 import time
 from threading import RLock
 
@@ -13,6 +14,8 @@ from .planning import classify, covers, evidence_requirements, expand_candidates
 from .search import BM25, rank
 from .sketches import make_sketches
 from .selection import evidence_cost, select_evidence
+from .telemetry import Telemetry, estimate_cost
+from .text import digest
 from .storage import Store, validate_collection
 
 
@@ -27,6 +30,7 @@ class KnowledgeBase:
         self.store = Store(self.settings.data_dir)
         self.cache = {}
         self.lock = RLock()
+        self.telemetry = Telemetry(self.settings.data_dir)
 
     def index_zip(self, content, collection):
         if len(content) > self.settings.max_zip_bytes:
@@ -66,6 +70,8 @@ class KnowledgeBase:
                    "documents": metadata, "chunks": chunks, "bm25": BM25.build(chunks), "statistics": stats,
                    "settings": self.settings.json()}
         self.store.save(collection, payload, vectors, raw)
+        stats["estimated_cost"] = estimate_cost(stats, self.settings.embedding_backend)
+        self.telemetry.record({"operation": "index", "collection": collection, "statistics": stats})
         return {"status": "success", "collection_name": collection, "statistics": stats}
 
     def load(self, collection):
@@ -124,14 +130,49 @@ class KnowledgeBase:
                           "requirements": len(requirements), "covered_requirements": len(covered), "retrieval_limit": limit}
 
     def query(self, collection, question, settings=None):
+        started = time.perf_counter()
+        with self.telemetry.span("knowledge_base.query", input={"collection": collection, "query": question}) as observation:
+            try:
+                result = self._query(collection, question, settings)
+                stats = result["statistics"]
+                stats["estimated_cost"] = estimate_cost(stats, self.settings.embedding_backend)
+                stats["langfuse_enabled"] = self.telemetry.client is not None
+                stats["total_computed_tokens"] = (stats["query_embedding"]["computed_input_tokens"]
+                                                   + stats["llm_input_tokens"] + stats["llm_output_tokens"])
+                self.telemetry.record({"operation": "query", "collection": collection,
+                                       "query_hash": digest(question), "statistics": stats})
+                if observation is not None:
+                    observation.update(output={"answer": result["answer"], "trace": result["trace"]}, metadata=stats)
+                return result
+            except Exception as e:
+                self.telemetry.record({"operation": "query", "collection": collection, "query_hash": digest(question),
+                                       "error_type": type(e).__name__, "query_seconds": time.perf_counter() - started})
+                if observation is not None:
+                    observation.update(level="ERROR", status_message=type(e).__name__)
+                raise
+
+    def _query(self, collection, question, settings=None):
         if not question.strip() or len(question) > 20000:
             raise ValueError("Question must contain 1-20000 characters")
         started = time.perf_counter()
         settings = (settings or self.settings).effective()
         payload, vectors = self.load(collection)
         trace = []
-        chunks, stats = self.retrieve(question, payload, vectors, settings, trace)
-        answer, generation_usage = generate(question, chunks, settings)
+        retrieval_started = time.perf_counter()
+        with self.telemetry.span("retrieval", as_type="retriever", input={"question": question}) as observation:
+            chunks, stats = self.retrieve(question, payload, vectors, settings, trace)
+            if observation is not None:
+                observation.update(output={"chunk_ids": [c["chunk_id"] for c in chunks]}, metadata=stats)
+        stats["retrieval_seconds"] = time.perf_counter() - retrieval_started
+        generation_started = time.perf_counter()
+        with self.telemetry.span("answer", as_type="generation", model=os.getenv("OPENCODE_MODEL", "deepseek-v4.1-flash") if settings.answer_backend == "opencode" else "extractive",
+                                 input={"question": question, "chunk_ids": [c["chunk_id"] for c in chunks]}) as observation:
+            answer, generation_usage = generate(question, chunks, settings)
+            if observation is not None:
+                costs = estimate_cost(generation_usage, settings.embedding_backend)
+                observation.update(output=answer, usage_details={"input": generation_usage["llm_input_tokens"], "output": generation_usage["llm_output_tokens"]},
+                                   cost_details={k: v for k, v in {"input": costs["llm_input_usd"], "output": costs["llm_output_usd"]}.items() if v is not None})
+        stats["generation_seconds"] = time.perf_counter() - generation_started
         trace.append(step("llm_answer_generation", "Answer from original cited passages", {"chunk_ids": [c["chunk_id"] for c in chunks]}, {"answer": answer}))
         checks = check_citations(answer, chunks)
         trace.append(step("citation_checks", "Validate citation identifiers (not a semantic proof)", {"answer": answer}, checks))
