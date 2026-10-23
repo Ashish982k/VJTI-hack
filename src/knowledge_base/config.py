@@ -43,8 +43,19 @@ class Settings:
             raise ValueError("index_variants must be both, full or compact")
         if not 0 <= self.overlap_tokens < self.chunk_tokens:
             raise ValueError("overlap_tokens must be less than chunk_tokens")
-        for name in ("chunk_tokens", "sketch_tokens", "top_k", "candidate_k", "broad_k", "context_tokens",
-                     "max_requirements", "max_output_tokens", "max_zip_bytes", "max_unpacked_bytes", "max_files"):
+        for name in (
+            "chunk_tokens",
+            "sketch_tokens",
+            "top_k",
+            "candidate_k",
+            "broad_k",
+            "context_tokens",
+            "max_requirements",
+            "max_output_tokens",
+            "max_zip_bytes",
+            "max_unpacked_bytes",
+            "max_files",
+        ):
             if getattr(self, name) <= 0:
                 raise ValueError(f"{name} must be positive")
         if self.max_followups < 0:
@@ -72,8 +83,14 @@ class Settings:
 
     def effective(self):
         if self.mode == "baseline":
-            return replace(self, metadata_routing=False, compact_embeddings=False, hybrid_search=False,
-                           multi_section=False, coverage_selection=False)
+            return replace(
+                self,
+                metadata_routing=False,
+                compact_embeddings=False,
+                hybrid_search=False,
+                multi_section=False,
+                coverage_selection=False,
+            )
         return self
 
     def json(self):

@@ -11,6 +11,7 @@ from test_baseline import pdf_bytes, zip_bytes
 
 class IntegrityTests(unittest.TestCase):
     setUp = test_baseline.BaselineTests.setUp
+
     def test_failed_reindex_preserves_previous_generation(self):
         kb = KnowledgeBase(self.settings)
         kb.index_zip(self.content, "safe")
@@ -26,12 +27,16 @@ class IntegrityTests(unittest.TestCase):
             client.post("/index", data={"collection_name": "one"}, files={"file": ("a.zip", self.content)})
             second = zip_bytes({"Beta_2026.pdf": pdf_bytes("Beta profit 700 million.")})
             client.post("/index", data={"collection_name": "two"}, files={"file": ("b.zip", second)})
-            response = client.post("/query", json={"collection_name": "two", "query": "List all Beta profit figures"})
+            response = client.post(
+                "/query", json={"collection_name": "two", "query": "List all Beta profit figures"}
+            )
             self.assertEqual(response.status_code, 200, response.text)
             result = response.json()
             self.assertTrue(all(c["collection_name"] == "two" for c in result["chunks"]))
             self.assertNotIn("Acme", result["answer"])
-            self.assertTrue(all(set(s) == {"step_name", "description", "input", "output"} for s in result["trace"]))
+            self.assertTrue(
+                all(set(s) == {"step_name", "description", "input", "output"} for s in result["trace"])
+            )
             self.assertEqual({r.path for r in client.app.routes}, {"/index", "/query"})
 
     def test_compact_only_index_reports_missing_baseline(self):

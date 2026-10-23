@@ -28,10 +28,12 @@ class BM25:
             posting = self.postings.get(term, [])
             if not posting:
                 continue
-            idf = math.log(1 + (len(scores) - len(posting) + .5) / (len(posting) + .5))
+            idf = math.log(1 + (len(scores) - len(posting) + 0.5) / (len(posting) + 0.5))
             indices = np.array([p[0] for p in posting])
             tf = np.array([p[1] for p in posting])
-            scores[indices] += idf * tf * 2.5 / (tf + 1.5 * (.25 + .75 * self.lengths[indices] / self.average))
+            scores[indices] += (
+                idf * tf * 2.5 / (tf + 1.5 * (0.25 + 0.75 * self.lengths[indices] / self.average))
+            )
         return scores
 
 

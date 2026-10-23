@@ -9,7 +9,14 @@ from knowledge_base.generation import generate, verified_answer
 
 class GenerationTests(unittest.TestCase):
     def setUp(self):
-        self.chunks = [{"chunk_id": "abc:1:0", "document": "Acme2026.pdf", "page_numbers": [1], "text": "Debt was INR 100 crore in 2026."}]
+        self.chunks = [
+            {
+                "chunk_id": "abc:1:0",
+                "document": "Acme2026.pdf",
+                "page_numbers": [1],
+                "text": "Debt was INR 100 crore in 2026.",
+            }
+        ]
 
     def test_reject_fabricated_numbers_and_citations(self):
         answer, checks = verified_answer("Debt was INR 900 crore [abc:1:0].", self.chunks, "opencode")
@@ -27,10 +34,16 @@ class GenerationTests(unittest.TestCase):
 
     def test_actual_provider_usage_and_original_evidence(self):
         response = MagicMock()
-        response.json.return_value = {"choices": [{"message": {"content": "Debt was INR 100 crore [abc:1:0]."}}], "usage": {"prompt_tokens": 123, "completion_tokens": 12}}
+        response.json.return_value = {
+            "choices": [{"message": {"content": "Debt was INR 100 crore [abc:1:0]."}}],
+            "usage": {"prompt_tokens": 123, "completion_tokens": 12},
+        }
         client = MagicMock()
         client.__enter__.return_value.post.return_value = response
-        with patch("knowledge_base.generation.httpx.Client", return_value=client), patch.dict(os.environ, {"OPENCODE_API_KEY": "test-only"}):
+        with (
+            patch("knowledge_base.generation.httpx.Client", return_value=client),
+            patch.dict(os.environ, {"OPENCODE_API_KEY": "test-only"}),
+        ):
             _, usage = generate("What is debt?", self.chunks, Settings())
         self.assertEqual(usage["llm_input_tokens"], 123)
         request = client.__enter__.return_value.post.call_args.kwargs["json"]

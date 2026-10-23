@@ -4,14 +4,25 @@ from knowledge_base.selection import evidence_cost, select_evidence
 
 
 def chunk(identifier, text, score=1, doc="d", section="Debt"):
-    return {"chunk_id": identifier, "text": text, "score": score, "document_id": doc,
-            "document": doc + ".pdf", "page_numbers": [1], "periods": ["2026"], "section_heading": section}
+    return {
+        "chunk_id": identifier,
+        "text": text,
+        "score": score,
+        "document_id": doc,
+        "document": doc + ".pdf",
+        "page_numbers": [1],
+        "periods": ["2026"],
+        "section_heading": section,
+    }
 
 
 class SelectionTests(unittest.TestCase):
     def test_coverage_duplicate_and_budget(self):
-        chunks = [chunk("1", "Debt default INR 100 crore."), chunk("2", "Debt default INR 100 crore."),
-                  chunk("3", "Court litigation could cost INR 50 crore.", .8, section="Litigation")]
+        chunks = [
+            chunk("1", "Debt default INR 100 crore."),
+            chunk("2", "Debt default INR 100 crore."),
+            chunk("3", "Court litigation could cost INR 50 crore.", 0.8, section="Litigation"),
+        ]
         req = [{"id": "legal", "kind": "section", "document_id": "d", "section_heading": "Litigation"}]
         selected, stats = select_evidence(chunks, req, 100, 2)
         self.assertIn("3", [c["chunk_id"] for c in selected])
@@ -21,8 +32,11 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual(sum(len(c.get("duplicate_sources", [])) for c in selected), 1)
 
     def test_distinct_figures_and_documents_survive(self):
-        chunks = [chunk("1", "Debt default INR 100 crore."), chunk("2", "Debt default INR 101 crore."),
-                  chunk("3", "Debt default INR 100 crore.", doc="other")]
+        chunks = [
+            chunk("1", "Debt default INR 100 crore."),
+            chunk("2", "Debt default INR 101 crore."),
+            chunk("3", "Debt default INR 100 crore.", doc="other"),
+        ]
         selected, _ = select_evidence(chunks, [], 1000, 3)
         self.assertEqual(len(selected), 3)
 

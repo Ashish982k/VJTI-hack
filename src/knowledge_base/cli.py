@@ -21,15 +21,23 @@ def main():
     settings = Settings.from_env()
     if args.mode:
         from dataclasses import replace
+
         settings = replace(settings, mode=args.mode)
     if args.command == "serve":
         import uvicorn
         from .api import create_app
+
         uvicorn.run(create_app(settings), host="0.0.0.0", port=8000)
         return
     kb = KnowledgeBase(settings)
     if args.command == "index":
-        result = kb.index_documents([(p.name, p.read_bytes()) for p in sorted(args.source.glob("*.pdf"))], args.collection) if args.source.is_dir() else kb.index_zip(args.source.read_bytes(), args.collection)
+        result = (
+            kb.index_documents(
+                [(p.name, p.read_bytes()) for p in sorted(args.source.glob("*.pdf"))], args.collection
+            )
+            if args.source.is_dir()
+            else kb.index_zip(args.source.read_bytes(), args.collection)
+        )
     else:
         result = kb.query(args.collection, args.question)
     print(json.dumps(result, indent=2, ensure_ascii=True))

@@ -1,4 +1,5 @@
 """Local embeddings with persistent exact-input cache and explicit token accounting."""
+
 import hashlib
 import sqlite3
 from contextlib import closing
@@ -23,6 +24,7 @@ class Embedder:
     def _load(self):
         if self.settings.embedding_backend == "sentence-transformers" and self.model is None:
             from sentence_transformers import SentenceTransformer
+
             self.model = SentenceTransformer(self.settings.embedding_model)
 
     def count(self, text):
@@ -41,10 +43,11 @@ class Embedder:
             for i, text in enumerate(texts):
                 ids = self.model.tokenizer.encode(text, add_special_tokens=False)
                 for j in range(0, max(1, len(ids)), width):
-                    windows.append(self.model.tokenizer.decode(ids[j:j + width]))
+                    windows.append(self.model.tokenizer.decode(ids[j : j + width]))
                     owners.append(i)
-            encoded = self.model.encode(windows, batch_size=64, normalize_embeddings=True,
-                                        show_progress_bar=False)
+            encoded = self.model.encode(
+                windows, batch_size=64, normalize_embeddings=True, show_progress_bar=False
+            )
             result = np.zeros((len(texts), encoded.shape[1]), dtype=np.float32)
             for owner, vector in zip(owners, encoded):
                 result[owner] += vector

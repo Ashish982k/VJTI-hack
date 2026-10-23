@@ -53,22 +53,38 @@ class KnowledgeBase:
             raise ValueError(f"No readable PDFs: {errors}")
         make_sketches(chunks, self.settings.sketch_tokens)
         vectors, usages = {}, {}
-        variants = ("full", "compact") if self.settings.index_variants == "both" else (self.settings.index_variants,)
+        variants = (
+            ("full", "compact") if self.settings.index_variants == "both" else (self.settings.index_variants,)
+        )
         for variant in variants:
             field = "text" if variant == "full" else "sketch"
             vectors[variant], usages[variant] = self.embedder.encode([c[field] for c in chunks])
         full_tokens = sum(self.embedder.count(c["text"]) for c in chunks)
         compact_tokens = sum(self.embedder.count(c["sketch"]) for c in chunks)
-        stats = {"documents": len(metadata), "chunks": len(chunks), "errors": errors,
-                 "full_embedding": usages.get("full"), "compact_embedding": usages.get("compact"),
-                 "full_logical_tokens": full_tokens, "compact_logical_tokens": compact_tokens,
-                 "embedding_token_reduction_percent": 100 * (1 - compact_tokens / max(1, full_tokens)),
-                 "actual_computed_embedding_tokens": sum(u["computed_input_tokens"] for u in usages.values()),
-                 "index_variants": list(variants), "sketch_llm_input_tokens": 0, "sketch_llm_output_tokens": 0,
-                 "indexing_seconds": time.perf_counter() - started}
-        payload = {"schema_version": 1, "embedding_identity": self.embedder.identity,
-                   "documents": metadata, "chunks": chunks, "bm25": BM25.build(chunks), "statistics": stats,
-                   "settings": self.settings.json()}
+        stats = {
+            "documents": len(metadata),
+            "chunks": len(chunks),
+            "errors": errors,
+            "full_embedding": usages.get("full"),
+            "compact_embedding": usages.get("compact"),
+            "full_logical_tokens": full_tokens,
+            "compact_logical_tokens": compact_tokens,
+            "embedding_token_reduction_percent": 100 * (1 - compact_tokens / max(1, full_tokens)),
+            "actual_computed_embedding_tokens": sum(u["computed_input_tokens"] for u in usages.values()),
+            "index_variants": list(variants),
+            "sketch_llm_input_tokens": 0,
+            "sketch_llm_output_tokens": 0,
+            "indexing_seconds": time.perf_counter() - started,
+        }
+        payload = {
+            "schema_version": 1,
+            "embedding_identity": self.embedder.identity,
+            "documents": metadata,
+            "chunks": chunks,
+            "bm25": BM25.build(chunks),
+            "statistics": stats,
+            "settings": self.settings.json(),
+        }
         self.store.save(collection, payload, vectors, raw)
         stats["estimated_cost"] = estimate_cost(stats, self.settings.embedding_backend)
         self.telemetry.record({"operation": "index", "collection": collection, "statistics": stats})
@@ -86,6 +102,15 @@ class KnowledgeBase:
             return cached[1], cached[2]
 
     def retrieve(self, question, payload, vectors, settings, trace):
+        query_type = classify(question)
+        trace.append(
+            step(
+                "query_classification",
+                "Rule-based question category",
+                {"question": question},
+                {"category": query_type},
+            )
+        )
         query, usage = self.embedder.encode([question])
         variant = "compact" if settings.compact_embeddings else "full"
         if variant not in vectors:
@@ -96,57 +121,134 @@ class KnowledgeBase:
             routing = route(question, payload["documents"])
             doc_ids = set(routing["document_ids"])
             allowed = np.array([c["document_id"] in doc_ids for c in payload["chunks"]])
-            trace.append(step("metadata_filter", "Route by entity, reporting period and document type", {"question": question}, routing))
+            trace.append(
+                step(
+                    "metadata_filter",
+                    "Route by entity, reporting period and document type",
+                    {"question": question},
+                    routing,
+                )
+            )
         sparse_index = BM25(payload["bm25"])
         lexical = sparse_index.scores(question) if settings.hybrid_search else np.zeros(len(scores))
         ranked = rank(scores, lexical, allowed, settings.candidate_k, settings.hybrid_search)
-        query_type = classify(question)
+        trace.append(
+            step(
+                "candidate_retrieval",
+                "Vector search with optional original-text BM25 fusion",
+                {
+                    "candidate_limit": settings.candidate_k,
+                    "variant": variant,
+                    "hybrid": settings.hybrid_search,
+                },
+                {
+                    "candidates": [
+                        {"chunk_id": payload["chunks"][i]["chunk_id"], "score": score} for i, score in ranked
+                    ]
+                },
+            )
+        )
         broad = query_type in {"exhaustive", "comparison", "broad_analysis", "multi_section"}
         requirements = []
-        trace.append(step("query_classification", "Rule-based question category", {"question": question}, {"category": query_type}))
         if (settings.multi_section or settings.coverage_selection) and broad:
             requirements = evidence_requirements(question, payload["chunks"], allowed, scores, settings)
         if settings.multi_section and broad:
-            ranked, searches = expand_candidates(question, payload["chunks"], scores, sparse_index, allowed, ranked, requirements, settings)
-            trace.append(step("multi_section_retrieval", "Independent section searches and bounded missing-evidence recovery", {"requirements": requirements, "max_followups": settings.max_followups}, {"searches": searches}))
+            ranked, searches = expand_candidates(
+                question, payload["chunks"], scores, sparse_index, allowed, ranked, requirements, settings
+            )
+            trace.append(
+                step(
+                    "multi_section_retrieval",
+                    "Independent section searches and bounded missing-evidence recovery",
+                    {"requirements": requirements, "max_followups": settings.max_followups},
+                    {"searches": searches},
+                )
+            )
         limit = settings.broad_k if settings.multi_section and broad else settings.top_k
         selected, used = [], 0
         candidates = [{**payload["chunks"][i], "score": score} for i, score in ranked]
         if settings.coverage_selection:
             selected, selection = select_evidence(candidates, requirements, settings.context_tokens, limit)
             used = selection["context_tokens"]
-            trace.append(step("coverage_selection", "Greedy relevance, new coverage, redundancy and token cost", {"candidate_ids": [c["chunk_id"] for c in candidates]}, selection))
+            trace.append(
+                step(
+                    "coverage_selection",
+                    "Greedy relevance, new coverage, redundancy and token cost",
+                    {"candidate_ids": [c["chunk_id"] for c in candidates]},
+                    selection,
+                )
+            )
         else:
             for chunk in candidates[:limit]:
                 cost = evidence_cost(chunk)
                 if used + cost <= settings.context_tokens:
                     selected.append(chunk)
                     used += cost
-        trace.append(step("similarity_search", "Vector search with optional original-text BM25 fusion", {"top_k": settings.top_k, "variant": variant, "hybrid": settings.hybrid_search},
-                          {"chunk_ids": [c["chunk_id"] for c in selected]}))
+        trace.append(
+            step(
+                "evidence_packing",
+                "Final original passages within the configured evidence budget",
+                {"passage_limit": limit, "context_budget": settings.context_tokens},
+                {"chunk_ids": [c["chunk_id"] for c in selected], "context_tokens": used},
+            )
+        )
         covered = [r["id"] for r in requirements if any(covers(c, r) for c in selected)]
-        trace.append(step("evidence_coverage", "Heuristic coverage of the evidence plan, not a proof of completeness", {"requirements": requirements}, {"covered": covered, "missing": [r["id"] for r in requirements if r["id"] not in covered]}))
-        return selected, {"query_embedding": usage, "context_tokens": used, "context_tokenizer": "lexical estimate including evidence labels", "query_type": query_type,
-                          "requirements": len(requirements), "covered_requirements": len(covered), "retrieval_limit": limit}
+        trace.append(
+            step(
+                "evidence_coverage",
+                "Heuristic coverage of the evidence plan, not a proof of completeness",
+                {"requirements": requirements},
+                {"covered": covered, "missing": [r["id"] for r in requirements if r["id"] not in covered]},
+            )
+        )
+        return selected, {
+            "query_embedding": usage,
+            "context_tokens": used,
+            "context_tokenizer": "lexical estimate including evidence labels",
+            "query_type": query_type,
+            "requirements": len(requirements),
+            "covered_requirements": len(covered),
+            "retrieval_limit": limit,
+        }
 
     def query(self, collection, question, settings=None):
         started = time.perf_counter()
-        with self.telemetry.span("knowledge_base.query", input={"collection": collection, "query": question}) as observation:
+        with self.telemetry.span(
+            "knowledge_base.query", input={"collection": collection, "query": question}
+        ) as observation:
             try:
                 result = self._query(collection, question, settings)
                 stats = result["statistics"]
                 stats["estimated_cost"] = estimate_cost(stats, self.settings.embedding_backend)
                 stats["langfuse_enabled"] = self.telemetry.client is not None
-                stats["total_computed_tokens"] = (stats["query_embedding"]["computed_input_tokens"]
-                                                   + stats["llm_input_tokens"] + stats["llm_output_tokens"])
-                self.telemetry.record({"operation": "query", "collection": collection,
-                                       "query_hash": digest(question), "statistics": stats})
+                stats["total_computed_tokens"] = (
+                    stats["query_embedding"]["computed_input_tokens"]
+                    + stats["llm_input_tokens"]
+                    + stats["llm_output_tokens"]
+                )
+                self.telemetry.record(
+                    {
+                        "operation": "query",
+                        "collection": collection,
+                        "query_hash": digest(question),
+                        "statistics": stats,
+                    }
+                )
                 if observation is not None:
-                    observation.update(output={"answer": result["answer"], "trace": result["trace"]}, metadata=stats)
+                    observation.update(
+                        output={"answer": result["answer"], "trace": result["trace"]}, metadata=stats
+                    )
                 return result
             except Exception as e:
-                self.telemetry.record({"operation": "query", "collection": collection, "query_hash": digest(question),
-                                       "error_type": type(e).__name__, "query_seconds": time.perf_counter() - started})
+                self.telemetry.record(
+                    {
+                        "operation": "query",
+                        "collection": collection,
+                        "query_hash": digest(question),
+                        "error_type": type(e).__name__,
+                        "query_seconds": time.perf_counter() - started,
+                    }
+                )
                 if observation is not None:
                     observation.update(level="ERROR", status_message=type(e).__name__)
                 raise
@@ -159,25 +261,66 @@ class KnowledgeBase:
         payload, vectors = self.load(collection)
         trace = []
         retrieval_started = time.perf_counter()
-        with self.telemetry.span("retrieval", as_type="retriever", input={"question": question}) as observation:
+        with self.telemetry.span(
+            "retrieval", as_type="retriever", input={"question": question}
+        ) as observation:
             chunks, stats = self.retrieve(question, payload, vectors, settings, trace)
             if observation is not None:
                 observation.update(output={"chunk_ids": [c["chunk_id"] for c in chunks]}, metadata=stats)
         stats["retrieval_seconds"] = time.perf_counter() - retrieval_started
         generation_started = time.perf_counter()
-        with self.telemetry.span("answer", as_type="generation", model=os.getenv("OPENCODE_MODEL", "deepseek-v4.1-flash") if settings.answer_backend == "opencode" else "extractive",
-                                 input={"question": question, "chunk_ids": [c["chunk_id"] for c in chunks]}) as observation:
+        with self.telemetry.span(
+            "answer",
+            as_type="generation",
+            model=os.getenv("OPENCODE_MODEL", "deepseek-v4.1-flash")
+            if settings.answer_backend == "opencode"
+            else "extractive",
+            input={"question": question, "chunk_ids": [c["chunk_id"] for c in chunks]},
+        ) as observation:
             answer, generation_usage = generate(question, chunks, settings)
             if observation is not None:
                 costs = estimate_cost(generation_usage, settings.embedding_backend)
-                observation.update(output=answer, usage_details={"input": generation_usage["llm_input_tokens"], "output": generation_usage["llm_output_tokens"]},
-                                   cost_details={k: v for k, v in {"input": costs["llm_input_usd"], "output": costs["llm_output_usd"]}.items() if v is not None})
+                observation.update(
+                    output=answer,
+                    usage_details={
+                        "input": generation_usage["llm_input_tokens"],
+                        "output": generation_usage["llm_output_tokens"],
+                    },
+                    cost_details={
+                        k: v
+                        for k, v in {
+                            "input": costs["llm_input_usd"],
+                            "output": costs["llm_output_usd"],
+                        }.items()
+                        if v is not None
+                    },
+                )
         stats["generation_seconds"] = time.perf_counter() - generation_started
-        trace.append(step("llm_answer_generation", "Answer from original cited passages", {"chunk_ids": [c["chunk_id"] for c in chunks]}, {"answer": answer}))
+        trace.append(
+            step(
+                "llm_answer_generation",
+                "Answer from original cited passages",
+                {"chunk_ids": [c["chunk_id"] for c in chunks]},
+                {"answer": answer},
+            )
+        )
         answer, checks = verified_answer(answer, chunks, settings.answer_backend)
-        trace.append(step("citation_checks", "Validate citation identifiers (not a semantic proof)", {"answer": answer}, checks))
+        trace.append(
+            step(
+                "citation_checks",
+                "Validate citation identifiers (not a semantic proof)",
+                {"answer": answer},
+                checks,
+            )
+        )
         stats.update(generation_usage)
         stats["support_check_action"] = checks["action"]
-        stats.update({"query_seconds": time.perf_counter() - started, "mode": settings.mode,
-                      "planning_llm_input_tokens": 0, "planning_llm_output_tokens": 0})
+        stats.update(
+            {
+                "query_seconds": time.perf_counter() - started,
+                "mode": settings.mode,
+                "planning_llm_input_tokens": 0,
+                "planning_llm_output_tokens": 0,
+            }
+        )
         return {"answer": answer, "chunks": chunks, "trace": trace, "statistics": stats}

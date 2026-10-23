@@ -31,18 +31,31 @@ class BaselineTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.settings = Settings(data_dir=Path(self.temp.name), mode="baseline", embedding_backend="hash", answer_backend="extractive")
-        self.content = zip_bytes({"Acme_2025.pdf": pdf_bytes("Acme revenue is 100 million in 2025.", "Debt was 20 million.")})
+        self.settings = Settings(
+            data_dir=Path(self.temp.name),
+            mode="baseline",
+            embedding_backend="hash",
+            answer_backend="extractive",
+        )
+        self.content = zip_bytes(
+            {"Acme_2025.pdf": pdf_bytes("Acme revenue is 100 million in 2025.", "Debt was 20 million.")}
+        )
 
     def test_api_and_restart_isolation(self):
         with TestClient(create_app(self.settings)) as client:
-            indexed = client.post("/index", data={"collection_name": "acme"}, files={"file": ("docs.zip", self.content)})
+            indexed = client.post(
+                "/index", data={"collection_name": "acme"}, files={"file": ("docs.zip", self.content)}
+            )
             self.assertEqual(indexed.status_code, 200, indexed.text)
-            self.assertEqual(client.post("/query", json={"collection_name": "absent", "query": "revenue"}).status_code, 404)
+            self.assertEqual(
+                client.post("/query", json={"collection_name": "absent", "query": "revenue"}).status_code, 404
+            )
         result = KnowledgeBase(self.settings).query("acme", "Acme revenue")
         self.assertIn("100", result["answer"])
         self.assertEqual(result["chunks"][0]["page_numbers"], [1])
-        self.assertTrue(all(set(s) == {"step_name", "description", "input", "output"} for s in result["trace"]))
+        self.assertTrue(
+            all(set(s) == {"step_name", "description", "input", "output"} for s in result["trace"])
+        )
 
     def test_reject_unsafe_zip_and_collection(self):
         kb = KnowledgeBase(self.settings)

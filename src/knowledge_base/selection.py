@@ -1,4 +1,5 @@
 """Transparent greedy marginal coverage under a context budget."""
+
 import re
 from functools import lru_cache
 
@@ -8,7 +9,9 @@ from .text import term_set, tokens
 
 def evidence_cost(chunk):
     # Includes the same identifier/document/page label sent with the original passage.
-    return len(tokens(f"[{chunk['chunk_id']}] {chunk['document']} pages {chunk['page_numbers']}\n{chunk['text']}"))
+    return len(
+        tokens(f"[{chunk['chunk_id']}] {chunk['document']} pages {chunk['page_numbers']}\n{chunk['text']}")
+    )
 
 
 @lru_cache(maxsize=32768)
@@ -42,11 +45,15 @@ def select_evidence(candidates, requirements, budget, limit):
             duplicate = max((redundancy(chunk, previous) for previous in selected), default=0)
             words = term_set(chunk["text"])
             novelty = len(words - seen_terms) / max(1, len(words))
-            marginal = (chunk["score"] / relevance_scale + 1.5 * len(coverage - covered)
-                        + .4 * novelty - .8 * duplicate)
-            if duplicate >= .94 and not coverage - covered:
+            marginal = (
+                chunk["score"] / relevance_scale
+                + 1.5 * len(coverage - covered)
+                + 0.4 * novelty
+                - 0.8 * duplicate
+            )
+            if duplicate >= 0.94 and not coverage - covered:
                 continue
-            choices.append((marginal / max(1, cost) ** .35, -pos, chunk, coverage, words, cost))
+            choices.append((marginal / max(1, cost) ** 0.35, -pos, chunk, coverage, words, cost))
         if not choices:
             break
         _, negative_pos, chunk, coverage, words, cost = max(choices, key=lambda c: (c[0], c[1]))
@@ -56,10 +63,25 @@ def select_evidence(candidates, requirements, budget, limit):
         covered |= coverage
         seen_terms |= words
     for chunk in remaining:
-        exact = next((s for s in selected if s["document_id"] == chunk["document_id"] and s["text"] == chunk["text"]), None)
+        exact = next(
+            (s for s in selected if s["document_id"] == chunk["document_id"] and s["text"] == chunk["text"]),
+            None,
+        )
         if exact:
-            exact.setdefault("duplicate_sources", []).append({k: chunk[k] for k in ("chunk_id", "document", "document_id", "page_numbers", "periods")})
-        rejected.append({"chunk_id": chunk["chunk_id"], "reason": "exact_duplicate" if exact else "redundancy_or_budget_or_limit"})
-    return selected, {"context_tokens": used, "budget": budget, "selected": len(selected),
-                      "rejected": rejected, "covered_requirements": sorted(covered),
-                      "tokenizer": "lexical estimate including evidence labels"}
+            exact.setdefault("duplicate_sources", []).append(
+                {k: chunk[k] for k in ("chunk_id", "document", "document_id", "page_numbers", "periods")}
+            )
+        rejected.append(
+            {
+                "chunk_id": chunk["chunk_id"],
+                "reason": "exact_duplicate" if exact else "redundancy_or_budget_or_limit",
+            }
+        )
+    return selected, {
+        "context_tokens": used,
+        "budget": budget,
+        "selected": len(selected),
+        "rejected": rejected,
+        "covered_requirements": sorted(covered),
+        "tokenizer": "lexical estimate including evidence labels",
+    }

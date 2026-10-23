@@ -3,7 +3,9 @@ import re
 from functools import lru_cache
 
 TOKEN_RE = re.compile(r"\w+|[^\w\s]", re.UNICODE)
-STOP = set("the a an of and or to in for on with by from is are was were as at this that it its be has have how what which all every please report annual company limited year".split())
+STOP = set(
+    "the a an of and or to in for on with by from is are was were as at this that it its be has have how what which all every please report annual company limited year".split()
+)
 
 
 def tokens(text):
@@ -28,11 +30,11 @@ def chunk_text(text, size, overlap):
     spans = list(TOKEN_RE.finditer(text))
     for start in range(0, len(spans), size - overlap):
         end = min(start + size, len(spans))
-        yield text[spans[start].start():spans[end - 1].end()]
+        yield text[spans[start].start() : spans[end - 1].end()]
         if end == len(spans):
             break
 
 
 def truncate(text, limit):
     spans = list(TOKEN_RE.finditer(text))
-    return text if len(spans) <= limit else text[:spans[limit - 1].end()]
+    return text if len(spans) <= limit else text[: spans[limit - 1].end()]

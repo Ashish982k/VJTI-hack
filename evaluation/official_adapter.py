@@ -1,4 +1,5 @@
 """Execute the provided evaluator definitions unchanged, excluding its demo invocation."""
+
 import ast
 import hashlib
 import json
@@ -22,8 +23,16 @@ def load_official(path=DEFAULT_NOTEBOOK):
         tree = ast.parse(source)
         names = {n.name for n in tree.body if isinstance(n, (ast.ClassDef, ast.FunctionDef))}
         is_imports = all(isinstance(n, (ast.Import, ast.ImportFrom)) for n in tree.body)
-        is_configuration = any(isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "OPENCODE_API_KEY" for t in n.targets) for n in tree.body)
-        if is_imports or is_configuration or names & {"OpenCodeClient", "RAGMetricsEvaluator", "evaluate_dataset"}:
+        is_configuration = any(
+            isinstance(n, ast.Assign)
+            and any(isinstance(t, ast.Name) and t.id == "OPENCODE_API_KEY" for t in n.targets)
+            for n in tree.body
+        )
+        if (
+            is_imports
+            or is_configuration
+            or names & {"OpenCodeClient", "RAGMetricsEvaluator", "evaluate_dataset"}
+        ):
             exec(compile(source, str(path), "exec"), namespace)
     key = os.getenv("OPENCODE_API_KEY")
     if not key:

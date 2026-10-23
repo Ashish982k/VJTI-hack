@@ -1,4 +1,5 @@
 """Page-preserving ingestion. Only PDFs enter the index, never benchmark files."""
+
 from pathlib import PurePosixPath
 import zipfile
 
@@ -38,13 +39,25 @@ def extract_document(filename, content, collection, settings):
     with pymupdf.open(stream=content, filetype="pdf") as pdf:
         if pdf.needs_pass:
             raise ValueError("Encrypted PDF requires a password")
-        pages = [{"number": i + 1, "label": page.get_label() or str(i + 1),
-                  "text": page.get_text("text", sort=True)} for i, page in enumerate(pdf)]
+        pages = [
+            {
+                "number": i + 1,
+                "label": page.get_label() or str(i + 1),
+                "text": page.get_text("text", sort=True),
+            }
+            for i, page in enumerate(pdf)
+        ]
         toc = pdf.get_toc()
     if not any(p["text"].strip() for p in pages):
         raise ValueError("PDF has no extractable text; OCR is required")
-    metadata = {"document_id": doc_id, "document": filename, "company": "", "periods": [],
-                "document_type": "document", "collection_name": collection}
+    metadata = {
+        "document_id": doc_id,
+        "document": filename,
+        "company": "",
+        "periods": [],
+        "document_type": "document",
+        "collection_name": collection,
+    }
     metadata.update(document_metadata(filename, "\n".join(p["text"] for p in pages[:3])))
     chunks = []
     heading = "Document"
@@ -54,8 +67,21 @@ def extract_document(filename, content, collection, settings):
                 if not title.lower().endswith(".pdf"):
                     heading = title
         section = page_heading(page["text"], heading)
-        for index, text in enumerate(chunk_text(page["text"], settings.chunk_tokens, settings.overlap_tokens)):
-            chunks.append({**metadata, "chunk_id": f"{doc_id}:{page['number']}:{index}", "text": text,
-                           "page_numbers": [page["number"]], "page_label": page["label"],
-                           "section_heading": section})
-    return {**metadata, "pages": len(pages), "empty_pages": [p["number"] for p in pages if not p["text"].strip()]}, chunks
+        for index, text in enumerate(
+            chunk_text(page["text"], settings.chunk_tokens, settings.overlap_tokens)
+        ):
+            chunks.append(
+                {
+                    **metadata,
+                    "chunk_id": f"{doc_id}:{page['number']}:{index}",
+                    "text": text,
+                    "page_numbers": [page["number"]],
+                    "page_label": page["label"],
+                    "section_heading": section,
+                }
+            )
+    return {
+        **metadata,
+        "pages": len(pages),
+        "empty_pages": [p["number"] for p in pages if not p["text"].strip()],
+    }, chunks

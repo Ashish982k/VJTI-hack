@@ -1,4 +1,5 @@
 """Immutable collection snapshots, atomically published; no pickle deserialization."""
+
 import json
 import os
 from pathlib import Path

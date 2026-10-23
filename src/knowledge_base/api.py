@@ -18,12 +18,19 @@ class QueryRequest(BaseModel):
 
 def create_app(settings=None):
     kb = KnowledgeBase(settings)
+
     @asynccontextmanager
     async def lifespan(app):
         yield
         await run_in_threadpool(kb.telemetry.flush)
 
-    app = FastAPI(title="Smart Knowledge Base for Agents", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
+    app = FastAPI(
+        title="Smart Knowledge Base for Agents",
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
+        lifespan=lifespan,
+    )
     app.state.kb = kb
 
     @app.post("/index")
