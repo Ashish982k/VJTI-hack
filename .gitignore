@@ -1,0 +1,15 @@
+.env
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+data/
+models/
+Train/
+Train.zip
+*.docx
+codeguard_dev.jsonl
+reports/runs/
+.coverage

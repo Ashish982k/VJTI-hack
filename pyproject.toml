@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vjti-knowledge-base"
+version = "0.1.0"
+description = "Document-aware, token-efficient knowledge base for agents"
+requires-python = ">=3.10"
+dependencies = [
+  "fastapi>=0.115,<1", "uvicorn>=0.30,<1", "python-multipart>=0.0.18",
+  "pymupdf>=1.24,<2", "numpy>=1.26,<3", "httpx>=0.27,<1",
+  "python-dotenv>=1,<2", "requests>=2.32,<3",
+]
+
+[project.optional-dependencies]
+semantic = ["sentence-transformers>=3,<6"]
+observability = ["langfuse>=3,<5"]
+dev = ["ruff>=0.9"]
+
+[project.scripts]
+kb = "knowledge_base.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 110
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
