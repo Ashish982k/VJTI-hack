@@ -12,8 +12,8 @@ from .metadata import route
 from .planning import classify, covers, evidence_requirements, expand_candidates
 from .search import BM25, rank
 from .sketches import make_sketches
+from .selection import evidence_cost, select_evidence
 from .storage import Store, validate_collection
-from .text import tokens
 
 
 def step(name, description, input_value, output):
@@ -98,24 +98,29 @@ class KnowledgeBase:
         broad = query_type in {"exhaustive", "comparison", "broad_analysis", "multi_section"}
         requirements = []
         trace.append(step("query_classification", "Rule-based question category", {"question": question}, {"category": query_type}))
-        if settings.multi_section and broad:
+        if (settings.multi_section or settings.coverage_selection) and broad:
             requirements = evidence_requirements(question, payload["chunks"], allowed, scores, settings)
+        if settings.multi_section and broad:
             ranked, searches = expand_candidates(question, payload["chunks"], scores, sparse_index, allowed, ranked, requirements, settings)
             trace.append(step("multi_section_retrieval", "Independent section searches and bounded missing-evidence recovery", {"requirements": requirements, "max_followups": settings.max_followups}, {"searches": searches}))
         limit = settings.broad_k if settings.multi_section and broad else settings.top_k
-        ranked = ranked[:limit]
         selected, used = [], 0
-        for i, score in ranked:
-            chunk = payload["chunks"][int(i)]
-            cost = len(tokens(chunk["text"]))
-            if used + cost <= settings.context_tokens:
-                selected.append({**chunk, "score": score})
-                used += cost
+        candidates = [{**payload["chunks"][i], "score": score} for i, score in ranked]
+        if settings.coverage_selection:
+            selected, selection = select_evidence(candidates, requirements, settings.context_tokens, limit)
+            used = selection["context_tokens"]
+            trace.append(step("coverage_selection", "Greedy relevance, new coverage, redundancy and token cost", {"candidate_ids": [c["chunk_id"] for c in candidates]}, selection))
+        else:
+            for chunk in candidates[:limit]:
+                cost = evidence_cost(chunk)
+                if used + cost <= settings.context_tokens:
+                    selected.append(chunk)
+                    used += cost
         trace.append(step("similarity_search", "Vector search with optional original-text BM25 fusion", {"top_k": settings.top_k, "variant": variant, "hybrid": settings.hybrid_search},
                           {"chunk_ids": [c["chunk_id"] for c in selected]}))
         covered = [r["id"] for r in requirements if any(covers(c, r) for c in selected)]
         trace.append(step("evidence_coverage", "Heuristic coverage of the evidence plan, not a proof of completeness", {"requirements": requirements}, {"covered": covered, "missing": [r["id"] for r in requirements if r["id"] not in covered]}))
-        return selected, {"query_embedding": usage, "context_tokens": used, "query_type": query_type,
+        return selected, {"query_embedding": usage, "context_tokens": used, "context_tokenizer": "lexical estimate including evidence labels", "query_type": query_type,
                           "requirements": len(requirements), "covered_requirements": len(covered), "retrieval_limit": limit}
 
     def query(self, collection, question, settings=None):
