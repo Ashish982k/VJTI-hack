@@ -9,6 +9,7 @@ from .embedding import Embedder
 from .generation import check_citations, generate
 from .ingestion import extract_document, read_zip
 from .metadata import route
+from .planning import classify, covers, evidence_requirements, expand_candidates
 from .search import BM25, rank
 from .sketches import make_sketches
 from .storage import Store, validate_collection
@@ -90,8 +91,19 @@ class KnowledgeBase:
             doc_ids = set(routing["document_ids"])
             allowed = np.array([c["document_id"] in doc_ids for c in payload["chunks"]])
             trace.append(step("metadata_filter", "Route by entity, reporting period and document type", {"question": question}, routing))
-        lexical = BM25(payload["bm25"]).scores(question) if settings.hybrid_search else np.zeros(len(scores))
-        ranked = rank(scores, lexical, allowed, settings.candidate_k, settings.hybrid_search)[:settings.top_k]
+        sparse_index = BM25(payload["bm25"])
+        lexical = sparse_index.scores(question) if settings.hybrid_search else np.zeros(len(scores))
+        ranked = rank(scores, lexical, allowed, settings.candidate_k, settings.hybrid_search)
+        query_type = classify(question)
+        broad = query_type in {"exhaustive", "comparison", "broad_analysis", "multi_section"}
+        requirements = []
+        trace.append(step("query_classification", "Rule-based question category", {"question": question}, {"category": query_type}))
+        if settings.multi_section and broad:
+            requirements = evidence_requirements(question, payload["chunks"], allowed, scores, settings)
+            ranked, searches = expand_candidates(question, payload["chunks"], scores, sparse_index, allowed, ranked, requirements, settings)
+            trace.append(step("multi_section_retrieval", "Independent section searches and bounded missing-evidence recovery", {"requirements": requirements, "max_followups": settings.max_followups}, {"searches": searches}))
+        limit = settings.broad_k if settings.multi_section and broad else settings.top_k
+        ranked = ranked[:limit]
         selected, used = [], 0
         for i, score in ranked:
             chunk = payload["chunks"][int(i)]
@@ -101,7 +113,10 @@ class KnowledgeBase:
                 used += cost
         trace.append(step("similarity_search", "Vector search with optional original-text BM25 fusion", {"top_k": settings.top_k, "variant": variant, "hybrid": settings.hybrid_search},
                           {"chunk_ids": [c["chunk_id"] for c in selected]}))
-        return selected, {"query_embedding": usage, "context_tokens": used}
+        covered = [r["id"] for r in requirements if any(covers(c, r) for c in selected)]
+        trace.append(step("evidence_coverage", "Heuristic coverage of the evidence plan, not a proof of completeness", {"requirements": requirements}, {"covered": covered, "missing": [r["id"] for r in requirements if r["id"] not in covered]}))
+        return selected, {"query_embedding": usage, "context_tokens": used, "query_type": query_type,
+                          "requirements": len(requirements), "covered_requirements": len(covered), "retrieval_limit": limit}
 
     def query(self, collection, question, settings=None):
         if not question.strip() or len(question) > 20000:
