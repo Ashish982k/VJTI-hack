@@ -141,3 +141,18 @@ answers. Proxy only: a different judge model from the official deepseek-v4.1-fla
 Answer points: 93 gold facts missing, 18 gold "not stated" points missing, 36 extra facts, 6 extra
 citation points. A36 asks about a 2025 report when only the 2024 report exists: the judge rejected every
 passage as the wrong period, while the gold answer uses the 2024 report and notes the mismatch.
+
+## Context metrics as the API contract scores them (page overlap, no LLM)
+
+The organizers' API contract scores context by page overlap: a chunk is relevant when its file and pages
+overlap a benchmark passage; recall is the share of benchmark (document, page) pairs covered. Exact
+values on the 54 saved answers (deepseek answers, minimax judge), by which chunks are returned:
+
+| Chunks returned | Chunks / question | Context P | Context R | F1 |
+|---|---:|---:|---:|---:|
+| All judged evidence (default) | 70 | 0.45 | 0.43 | 0.44 |
+| One chunk per page | 39 | 0.42 | 0.43 | 0.43 |
+| Grade-3 only | 28 | 0.51 | 0.29 | 0.37 |
+| Cited in the answer only | 20 | 0.51 | 0.23 | 0.32 |
+
+`evaluation.run` now reports these as `contract_context_precision` / `contract_context_recall` for every run.

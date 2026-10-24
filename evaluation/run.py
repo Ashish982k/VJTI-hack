@@ -14,6 +14,7 @@ import time
 from knowledge_base.config import Settings
 from knowledge_base.pipeline import KnowledgeBase
 from knowledge_base.text import terms
+from .contract_metrics import context_metrics, gold_passages
 from .official_adapter import load_official, OFFICIAL_SHA256
 
 
@@ -23,28 +24,20 @@ def gold_chunks(row):
     ]
 
 
-def retrieval_diagnostics(retrieved, gold):
-    """Lexical/page overlap with gold chunks. Diagnostics only, NEVER the official LLM-judged metrics."""
-    expected_pages = {
-        (c["metadata"]["document"], int(p)) for c in gold for p in c["metadata"].get("page_numbers", [])
-    }
-    actual_pages = {(c["document"], p) for c in retrieved for p in c["page_numbers"]}
+def retrieval_diagnostics(retrieved, row, aliases=None):
+    """Context metrics exactly as the API contract scores them (page overlap, no LLM), plus a lexical
+    diagnostic. retrieved: chunks in the contract shape {content, metadata: {file_name, page_numbers}}."""
+    gold = gold_chunks(row)
     gold_terms = [set(terms(c["content"])) for c in gold]
-    retrieved_terms = [set(terms(c["text"])) for c in retrieved]
-    covered = sum(
-        1 for g in gold_terms if g and any(len(g & r) / len(g) >= 0.6 for r in retrieved_terms)
-    )
-    supported = sum(
-        1 for r in retrieved_terms if r and any(len(g & r) / len(r) >= 0.5 for g in gold_terms)
-    )
+    retrieved_terms = [set(terms(c["content"])) for c in retrieved]
+    covered = sum(1 for g in gold_terms if g and any(len(g & r) / len(g) >= 0.6 for r in retrieved_terms))
+    contract = context_metrics(retrieved, gold_passages(row, aliases))
     return {
         "gold_chunks": len(gold),
         "returned_chunks": len(retrieved),
-        "page_recall_proxy": len(expected_pages & actual_pages) / len(expected_pages) if expected_pages else 0,
+        "contract_context_precision": contract["context_precision"],
+        "contract_context_recall": contract["context_recall"],
         "gold_coverage_proxy": covered / len(gold) if gold else 0,
-        "returned_precision_proxy": supported / len(retrieved) if retrieved else 0,
-        # Mirrors the official recall formula: relevant returned / gold count (can exceed 1).
-        "count_recall_proxy": supported / len(gold) if gold else 0,
     }
 
 
@@ -114,6 +107,15 @@ def main():
     rows = rows[args.offset : args.offset + args.limit]
     kb = KnowledgeBase(settings)
     payload, _ = kb.load(args.collection)
+    # The training gold names a few files differently from the corpus (e.g. 2026-05960.pdf for
+    # 91fr14952.pdf); resolve those by content so page-based context metrics compare the same documents.
+    from .analyze import GoldMapper
+
+    mapper, aliases = GoldMapper(payload["chunks"]), {}
+    for row in rows:
+        for name, chunks in row["benchmark_chunks_w_metadata"].items():
+            if name not in aliases:
+                aliases[name] = mapper.resolve(name, [set(terms(c["content"])) for c in chunks[:3]])
     args.output.mkdir(parents=True, exist_ok=True)
     responses_path = args.output / "responses.jsonl"
     responses_path.write_text("", encoding="utf-8")
@@ -126,12 +128,12 @@ def main():
     def process(row):
         response = reused[row["id"]] if row["id"] in reused else kb.query(args.collection, row["question"])
         gold = gold_chunks(row)
-        diagnostic = retrieval_diagnostics(response["chunks"], gold)
+        diagnostic = retrieval_diagnostics(response["chunks"], row, aliases)
         item = {
             "query": row["question"],
             "ai_answer": response["answer"],
             "benchmark_answer": row["benchmark_answer"],
-            "retrieved_chunks": [c["text"] for c in response["chunks"]],
+            "retrieved_chunks": [c["content"] for c in response["chunks"]],
             "benchmark_chunks": [c["content"] for c in gold],
         }
         with lock:
@@ -176,7 +178,8 @@ def main():
             )
             print(
                 f"[{done}/{len(rows)}] {row['id']} returned={diagnostic['returned_chunks']} "
-                f"gold={diagnostic['gold_chunks']} {stats['query_seconds']:.0f}s{scores}",
+                f"gold={diagnostic['gold_chunks']} pageCtxP={diagnostic['contract_context_precision']:.2f} "
+                f"pageCtxR={diagnostic['contract_context_recall']:.2f} {stats['query_seconds']:.0f}s{scores}",
                 flush=True,
             )
     order = {r["id"]: n for n, r in enumerate(rows)}
@@ -194,11 +197,12 @@ def main():
         "questions": len(rows),
         "failures": failures,
         "wall_seconds": time.perf_counter() - started,
-        "diagnostics_note": "Lexical/page overlap with gold chunks; not the official LLM-judged metrics.",
+        "diagnostics_note": "contract_context_* follow the API contract's page-based scoring exactly; "
+                            "official.jsonl context metrics come from the notebook's LLM judge.",
     }
     if details:
-        for field in ("page_recall_proxy", "gold_coverage_proxy", "returned_precision_proxy",
-                      "count_recall_proxy", "returned_chunks", "gold_chunks"):
+        for field in ("contract_context_precision", "contract_context_recall", "gold_coverage_proxy",
+                      "returned_chunks", "gold_chunks"):
             summary["mean_" + field] = statistics.mean(d[field] for d in details)
         for field in ("query_seconds", "llm_calls", "llm_input_tokens", "llm_output_tokens"):
             summary["mean_" + field] = statistics.mean(d["statistics"][field] for d in details)

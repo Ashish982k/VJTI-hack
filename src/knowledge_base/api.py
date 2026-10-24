@@ -61,7 +61,7 @@ def create_app(settings=None):
         try:
             return kb.query(request.collection_name, request.query)
         except FileNotFoundError as e:
-            raise HTTPException(404, str(e)) from e
+            raise HTTPException(404, "unknown collection") from e
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
         except Exception as e:

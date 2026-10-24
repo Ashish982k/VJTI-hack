@@ -49,17 +49,33 @@ class ApiTests(unittest.TestCase):
                 "/index", data={"collection_name": "acme"}, files={"file": ("docs.zip", self.content)}
             )
             self.assertEqual(indexed.status_code, 200, indexed.text)
-            self.assertEqual(
-                client.post("/query", json={"collection_name": "absent", "query": "revenue"}).status_code, 404
-            )
+            self.assertEqual(indexed.json()["status"], "success")
+            self.assertEqual(indexed.json()["documents_indexed"], 1)
+            missing = client.post("/query", json={"collection_name": "absent", "query": "revenue"},
+                                  headers={"ngrok-skip-browser-warning": "true"})
+            self.assertEqual(missing.status_code, 404)
+            self.assertEqual(missing.json(), {"detail": "unknown collection"})
             self.assertEqual({r.path for r in client.app.routes}, {"/index", "/query"})
+            response = client.post("/query", json={"collection_name": "acme", "query": "Acme revenue"})
+            self.assertEqual(response.headers["content-type"], "application/json")
+            chunk = response.json()["chunks"][0]
+            self.assertIsInstance(chunk["content"], str)
+            self.assertEqual(chunk["metadata"]["file_name"], "Acme_2025.pdf")
+            self.assertEqual(chunk["metadata"]["page_numbers"], [1])
         result = KnowledgeBase(self.settings).query("acme", "Acme revenue")
         self.assertIn("100", result["answer"])
-        self.assertEqual(result["chunks"][0]["page_numbers"], [1])
+        self.assertEqual(result["chunks"][0]["metadata"]["page_numbers"], [1])
         self.assertTrue(
             all(set(s) == {"step_name", "description", "input", "output"} for s in result["trace"])
         )
         self.assertIn("Acme_2025, p.1", result["answer"])
+
+    def test_nested_zip_paths_report_base_file_name(self):
+        kb = KnowledgeBase(self.settings)
+        nested = zip_bytes({"corpus/2025/Acme_2025.pdf": pdf_bytes("Acme revenue is 100 million in 2025.")})
+        self.assertEqual(kb.index_zip(nested, "nested")["documents_indexed"], 1)
+        chunk = kb.query("nested", "Acme revenue")["chunks"][0]
+        self.assertEqual(chunk["metadata"]["file_name"], "Acme_2025.pdf")
 
     def test_reject_unsafe_zip_and_collection(self):
         kb = KnowledgeBase(self.settings)

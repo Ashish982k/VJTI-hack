@@ -31,7 +31,7 @@ class IntegrityTests(unittest.TestCase):
             self.assertEqual(response.status_code, 200, response.text)
             result = response.json()
             self.assertTrue(result["chunks"])
-            self.assertTrue(all(c["collection_name"] == "two" for c in result["chunks"]))
+            self.assertTrue(all(c["metadata"]["collection_name"] == "two" for c in result["chunks"]))
             self.assertNotIn("Acme", result["answer"])
 
 

@@ -140,8 +140,8 @@ function render(data) {
   $("answer").innerHTML = DOMPurify.sanitize(marked.parse(data.answer || ""));
   $("chunksTitle").textContent = `Evidence (${data.chunks.length})`;
   $("chunks").innerHTML = data.chunks.map((c) => `
-    <div class="chunk"><div class="meta">${esc(c.document)} · p.${esc(c.page_numbers.join(", "))} · ${esc(c.section || "")}
-      ${c.cited_in_answer ? '<span class="cited"> · cited</span>' : ""}</div>${esc(c.text)}</div>`).join("");
+    <div class="chunk"><div class="meta">${esc(c.metadata.file_name)} · p.${esc(c.metadata.page_numbers.join(", "))} · ${esc(c.metadata.section || "")}
+      ${c.metadata.cited_in_answer ? '<span class="cited"> · cited</span>' : ""}</div>${esc(c.content)}</div>`).join("");
   $("trace").innerHTML = data.trace.map((t) => `
     <details><summary>${esc(t.step_name)}</summary><p class="status">${esc(t.description)}</p>
       <pre>${esc(JSON.stringify({input: t.input, output: t.output}, null, 2))}</pre></details>`).join("");
@@ -157,7 +157,7 @@ $("index").onclick = async () => {
     const res = await fetch(`${$("api").value.replace(/\/$/, "")}/index`, {method: "POST", body: form});
     if (!res.ok) throw new Error(await errorText(res));
     const out = await res.json(), st = out.statistics;
-    $("indexStatus").textContent = `Indexed ${st.documents} documents into “${collection}” (${st.units} units, ${Math.round(st.indexing_seconds)} s).`;
+    $("indexStatus").textContent = `Indexed ${out.documents_indexed ?? st.documents} documents into “${collection}” (${st.units} units, ${Math.round(st.indexing_seconds)} s).`;
     $("collection").value = collection; store("kb.collection", collection);
   } catch (e) {
     $("indexStatus").className = "status error"; $("indexStatus").textContent = `Indexing failed. ${e.message}`;

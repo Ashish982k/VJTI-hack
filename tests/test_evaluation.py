@@ -4,6 +4,7 @@ import unittest
 from unittest.mock import patch
 
 from evaluation.official_adapter import DEFAULT_NOTEBOOK, OFFICIAL_SHA256, load_official
+from evaluation.contract_metrics import normalize_name
 from evaluation.run import retrieval_diagnostics
 from knowledge_base.telemetry import estimate_cost
 
@@ -22,10 +23,14 @@ class EvaluationTests(unittest.TestCase):
         self.assertIsNone(cost["total_usd"])
         self.assertEqual(cost["embedding_usd"], 0)
 
-    def test_page_proxy_matches_document_as_well_as_page(self):
-        gold = [{"content": "debt", "metadata": {"document": "a.pdf", "page_numbers": [1]}}]
-        predicted = [{"text": "debt", "document": "b.pdf", "page_numbers": [1]}]
-        diagnostics = retrieval_diagnostics(predicted, gold)
-        self.assertEqual(diagnostics["page_recall_proxy"], 0)
-        self.assertEqual(diagnostics["gold_coverage_proxy"], 1)
-        self.assertEqual(diagnostics["count_recall_proxy"], 1)
+    def test_contract_context_metrics_need_document_and_page_overlap(self):
+        row = {"benchmark_chunks_w_metadata": {"Report_2023.pdf": [
+            {"content": "debt rose", "metadata": {"document": "Report_2023.pdf", "page_numbers": [3, 4]}}]}}
+        chunks = [
+            {"content": "debt rose", "metadata": {"file_name": "report-2023.PDF", "page_numbers": [4]}},
+            {"content": "debt rose", "metadata": {"file_name": "other.pdf", "page_numbers": [3]}},
+        ]
+        diagnostics = retrieval_diagnostics(chunks, row)
+        self.assertEqual(diagnostics["contract_context_precision"], 0.5)
+        self.assertEqual(diagnostics["contract_context_recall"], 0.5)
+        self.assertEqual(normalize_name("docs/Report_2023.pdf"), "report2023")

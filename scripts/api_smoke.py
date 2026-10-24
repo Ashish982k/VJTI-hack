@@ -77,7 +77,10 @@ def main():
                     answer.raise_for_status()
                     response = answer.json()
                     assert "100" in response["answer"], response
-                    assert response["chunks"][0]["page_numbers"] == [1]
+                    chunk = response["chunks"][0]
+                    assert chunk["metadata"]["page_numbers"] == [1], chunk
+                    assert chunk["metadata"]["file_name"] == "Acme_Annual_Report_FY2026.pdf", chunk
+                    assert isinstance(chunk["content"], str)
                     assert all(
                         set(s) == {"step_name", "description", "input", "output"} for s in response["trace"]
                     )

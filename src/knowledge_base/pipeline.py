@@ -1,7 +1,9 @@
 """Catalog-routed, aspect-planned, judge-filtered evidence retrieval with verified cited answers."""
 
+from collections import Counter
 from contextlib import contextmanager
 import io
+from pathlib import PurePosixPath
 import time
 from threading import RLock
 
@@ -98,7 +100,8 @@ class KnowledgeBase:
         self.store.save(collection, payload, {"units": vectors}, raw)
         stats["estimated_cost"] = estimate_cost(stats, self.settings.embedding_backend)
         self.telemetry.record({"operation": "index", "collection": collection, "statistics": stats})
-        return {"status": "success", "collection_name": collection, "statistics": stats}
+        return {"status": "success", "collection_name": collection, "documents_indexed": len(metadata),
+                "statistics": stats}
 
     def load(self, collection):
         with self.lock:
@@ -220,9 +223,8 @@ class KnowledgeBase:
                 "top": [
                     {"chunk_id": payload["chunks"][c["index"]]["chunk_id"], "score": round(c["score"], 5),
                      "matched": c["queries"]}
-                    for c in candidates[:50]
+                    for c in candidates[:10]
                 ],
-                "candidate_chunk_ids": [payload["chunks"][c["index"]]["chunk_id"] for c in candidates],
             }
 
         items = self._items(payload, [c["index"] for c in candidates], scores)
@@ -237,7 +239,7 @@ class KnowledgeBase:
                 "relevant": len(relevant),
                 "rejected": len(items) - len(relevant),
                 "failed_batches": failures,
-                "relevant_chunk_ids": [payload["chunks"][i["index"]]["chunk_id"] for i in relevant],
+                "grades": dict(Counter(v.get("grade") for v in verdicts.values())),
             }
 
         if self.llm.enabled and plan["aspects"] and settings.recovery_k:
@@ -309,7 +311,8 @@ class KnowledgeBase:
             answer_evidence = [e for e in evidence if e["label"] in prompt_labels]
             record["output"] = {"evidence": len(evidence), "direct_answer_passages": len(direct),
                                 "answer_context_passages": len(answer_evidence),
-                                "context_tokens": used, "chunk_ids": [e["chunk_id"] for e in evidence]}
+                                "context_tokens": used,
+                                "pages": sorted({f"{PurePosixPath(e['document']).name} p.{e['page']}" for e in evidence})[:20]}
 
         with self.stage(run, "llm_answer_generation", "Synthesize a structured answer from the evidence only, "
                         "citing passage ids", {"evidence_ids": [e["label"] for e in answer_evidence]},
@@ -335,20 +338,24 @@ class KnowledgeBase:
             record["output"] = {**checks, "cited_evidence": cited}
 
         cited_set = set(cited)
+        # Contract shape (API_CONTRACT section 3.2): content + metadata.file_name/page_numbers. The other
+        # metadata keys are extra fields, which the harness ignores.
         chunks = [
             {
-                "chunk_id": e["chunk_id"],
-                "evidence_id": e["label"],
-                "text": e["text"],
-                "document": e["document"],
-                "document_id": e["document_id"],
-                "page_numbers": e["page_numbers"],
-                "page_label": e["page_label"],
-                "section": e["section"],
-                "collection_name": e["collection_name"],
-                "cited_in_answer": e["label"] in cited_set,
-                "retrieval_score": round(e["score"], 6),
-                "judge_grade": e["grade"],
+                "content": e["text"],
+                "metadata": {
+                    "file_name": PurePosixPath(e["document"]).name,
+                    "page_numbers": e["page_numbers"],
+                    "document_path": e["document"],
+                    "page_label": e["page_label"],
+                    "section": e["section"],
+                    "chunk_id": e["chunk_id"],
+                    "evidence_id": e["label"],
+                    "judge_grade": e["grade"],
+                    "cited_in_answer": e["label"] in cited_set,
+                    "retrieval_score": round(e["score"], 6),
+                    "collection_name": e["collection_name"],
+                },
             }
             for e in evidence
         ]
@@ -365,5 +372,7 @@ class KnowledgeBase:
             "cited_chunks": len(cited_set),
             "query_seconds": time.perf_counter() - started,
             "llm_backend": settings.llm_backend,
+            # Full id lists live here, not in the trace, which the contract asks to keep summarised.
+            "candidate_chunk_ids": [payload["chunks"][c["index"]]["chunk_id"] for c in candidates],
         }
         return {"answer": answer, "chunks": chunks, "trace": run["trace"], "statistics": statistics}

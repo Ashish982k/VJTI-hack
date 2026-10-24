@@ -112,8 +112,9 @@ def main():
     for qid, response in sorted(responses.items()):
         mapped, unmapped = mapper.map(gold[qid]["benchmark_chunks_w_metadata"])
         planned = set(step_output(response, "query_planning").get("documents", []))
-        candidates = set(step_output(response, "candidate_retrieval").get("candidate_chunk_ids", []))
-        returned = {c["chunk_id"] for c in response["chunks"]}
+        candidates = set(response["statistics"].get("candidate_chunk_ids")
+                         or step_output(response, "candidate_retrieval").get("candidate_chunk_ids", []))
+        returned = {c.get("metadata", {}).get("chunk_id") or c.get("chunk_id") for c in response["chunks"]}
         counts = Counter(unmapped=unmapped)
         gold_units = set()
         for document, units in mapped:

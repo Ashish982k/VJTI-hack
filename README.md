@@ -29,9 +29,20 @@ On Windows use `.venv\Scripts\python` and `Copy-Item .env.example .env`. On macO
 (Python skips hidden `.pth` files).
 
 `POST /index`: multipart `file` (ZIP of PDFs) and `collection_name`. `POST /query`: JSON
-`{"collection_name": "train", "query": "..."}`. The response has `answer`, `chunks` (every accepted
-evidence paragraph with document, page and section), `trace` (each entry has exactly `step_name`,
-`description`, `input`, `output`) and `statistics`. These are the only two routes.
+`{"collection_name": "train", "query": "..."}`. Responses follow the organizers' API contract: `answer`,
+`chunks` (`content` + `metadata.file_name` + 1-based `metadata.page_numbers`), a four-field `trace`, plus
+optional `statistics`. These are the only two routes. Details: [docs/api.md](docs/api.md).
+
+## Submission (public URL)
+
+```bash
+.venv/bin/python -m uvicorn knowledge_base.api:create_app --factory --host 127.0.0.1 --port 8765
+ngrok http 8765                      # install: brew install ngrok; then ngrok config add-authtoken <token>
+.venv/bin/python scripts/contract_check.py https://<id>.ngrok-free.app --collection train
+```
+
+Submit the base URL only (no `/index` or `/query`). Keep the laptop awake (`caffeinate -dimsu`) and do not
+restart ngrok after submitting: the URL changes on restart unless you use a reserved domain.
 
 ## Ask questions in the browser
 

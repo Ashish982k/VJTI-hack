@@ -75,9 +75,9 @@ class LLMPipelineTests(unittest.TestCase):
         stats = kb.index_documents(docs, "acme")["statistics"]
         self.assertEqual(stats["profiling_llm"]["calls"], 2)
         result = kb.query("acme", "How serious are Acme's FY2026 debt defaults?")
-        documents = {c["document"] for c in result["chunks"]}
+        documents = {c["metadata"]["file_name"] for c in result["chunks"]}
         self.assertEqual(documents, {"Acme_Annual Report FY 2026.pdf"})
-        self.assertTrue(all("default" in c["text"] or "auditor" in c["text"] for c in result["chunks"]))
+        self.assertTrue(all("default" in c["content"] or "auditor" in c["content"] for c in result["chunks"]))
         self.assertIn("4,053.90", result["answer"])
         self.assertNotIn("777", result["answer"])  # unsupported figure removed by verification
         self.assertNotIn("founded", result["answer"])  # unasked line removed by the editor
@@ -124,3 +124,32 @@ class PeriodFallbackTests(unittest.TestCase):
         self.assertIn("period_fallback", [s["step_name"] for s in result["trace"]])
         self.assertTrue(result["chunks"])
         self.assertIn("do not cover the requested period", kb.llm.answer_prompt)
+
+
+class UnanswerableLLM(ScriptedLLM):
+    """Judge rejects everything, even with the period fallback; one judge batch also fails outright."""
+
+    def chat(self, system, user, **kwargs):
+        if system == JUDGE_SYSTEM:
+            self.judge_calls = getattr(self, "judge_calls", 0) + 1
+            if self.judge_calls <= 2:
+                raise RuntimeError("provider timeout")
+            passages = json.loads(user.split("Passages:\n", 1)[1].split("\n\nGrade every passage")[0])
+            return {"verdicts": [{"id": p["id"], "grade": 0, "aspects": []} for p in passages]}, usage()
+        return super().chat(system, user, **kwargs)
+
+
+class UnanswerableTests(unittest.TestCase):
+    def test_no_evidence_returns_honest_answer_and_empty_chunks(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        settings = replace(offline_settings(temp.name), llm_backend="opencode")
+        kb = KnowledgeBase(settings)
+        kb.llm = UnanswerableLLM(settings)
+        kb.index_documents([("Acme_Annual Report FY 2026.pdf", pdf_bytes("Acme FY2026 revenue was 5 crore."))],
+                           "acme")
+        result = kb.query("acme", "Who is the CEO of a different company?")
+        self.assertEqual(result["chunks"], [])  # a failed judge batch never leaks unjudged passages
+        self.assertIn("do not contain", result["answer"])
+        self.assertTrue(result["trace"])
+        self.assertTrue(all(set(s) == {"step_name", "description", "input", "output"} for s in result["trace"]))

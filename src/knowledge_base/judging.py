@@ -64,13 +64,16 @@ def judge_candidates(question, plan, items, llm, settings):
     batches = [items[i : i + settings.judge_batch] for i in range(0, len(items), settings.judge_batch)]
 
     def run(batch):
-        try:
-            result, usage = llm.chat(JUDGE_SYSTEM, _judge_prompt(question, plan, batch), json_mode=True,
-                                     fast=True, max_tokens=400 + 60 * len(batch))
-            return result.get("verdicts") or [], usage, None
-        except Exception as e:
-            logger.exception("Evidence judge batch failed")
-            return [], None, str(e)
+        error = None
+        for _ in range(2):  # one retry; an unjudged passage is never returned as evidence
+            try:
+                result, usage = llm.chat(JUDGE_SYSTEM, _judge_prompt(question, plan, batch), json_mode=True,
+                                         fast=True, max_tokens=400 + 60 * len(batch))
+                return result.get("verdicts") or [], usage, None
+            except Exception as e:
+                logger.exception("Evidence judge batch failed")
+                error = str(e)
+        return [], None, error
 
     verdicts, usages, failures = {}, [], []
     with ThreadPoolExecutor(settings.llm_concurrency) as pool:
@@ -90,12 +93,6 @@ def judge_candidates(question, plan, items, llm, settings):
                     }
             if error:
                 failures.append(error)
-                # A failed batch keeps only its strongest-ranked passages instead of dropping all.
-                ranked = sorted(batch, key=lambda i: -i["score"])
-                for i, item in enumerate(ranked):
-                    verdicts.setdefault(
-                        item["label"], {"relevant": i < len(batch) // 3, "aspects": [], "source": "rank_fallback"}
-                    )
             for item in batch:
                 verdicts.setdefault(item["label"], {"relevant": False, "aspects": [], "source": "no_verdict"})
     return verdicts, usages, failures
