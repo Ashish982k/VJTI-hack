@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Knowledge Base Q&amp;A</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.1.6/purify.min.js"></script>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --text: #1b1f24; --muted: #5d6673; --border: #dde1e6;
+    --accent: #1f5fbf; --accent-text: #ffffff; --soft: #eef3fb; --error: #b42318; --ok: #157347;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #111418; --panel: #1a1f25; --text: #e6e9ed; --muted: #9aa4b1; --border: #2c333c;
+      --accent: #5b9bff; --accent-text: #0c1117; --soft: #1d2735; --error: #ff8a80; --ok: #5fd39a;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 980px; margin: 0 auto; padding: 24px 16px 64px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 20px; }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px;
+           margin-bottom: 16px; }
+  label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 4px; }
+  input, textarea { width: 100%; padding: 9px 10px; border: 1px solid var(--border); border-radius: 8px;
+                    background: var(--bg); color: var(--text); font: inherit; }
+  textarea { min-height: 96px; resize: vertical; }
+  .row { display: grid; grid-template-columns: 2fr 1fr; gap: 12px; margin-bottom: 12px; }
+  @media (max-width: 600px) { .row { grid-template-columns: 1fr; } }
+  button { background: var(--accent); color: var(--accent-text); border: 0; border-radius: 8px;
+           padding: 9px 18px; font: inherit; font-weight: 600; cursor: pointer; }
+  button:disabled { opacity: .55; cursor: progress; }
+  .actions { display: flex; gap: 12px; align-items: center; margin-top: 12px; flex-wrap: wrap; }
+  .status { color: var(--muted); font-size: 13px; }
+  .error { color: var(--error); white-space: pre-wrap; }
+  .answer h1, .answer h2, .answer h3 { font-size: 17px; margin: 18px 0 6px; }
+  .answer table { border-collapse: collapse; width: 100%; display: block; overflow-x: auto; margin: 8px 0; }
+  .answer th, .answer td { border: 1px solid var(--border); padding: 5px 8px; text-align: left; vertical-align: top; }
+  .stats { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+  .chip { background: var(--soft); border-radius: 999px; padding: 3px 10px; font-size: 12px; }
+  details { border-top: 1px solid var(--border); padding: 8px 0; }
+  summary { cursor: pointer; font-weight: 600; }
+  .chunk { border: 1px solid var(--border); border-radius: 8px; padding: 10px; margin: 8px 0; font-size: 14px; }
+  .chunk .meta { color: var(--muted); font-size: 12px; margin-bottom: 4px; }
+  .chunk .cited { color: var(--ok); font-weight: 600; }
+  pre { white-space: pre-wrap; word-break: break-word; font-size: 12px; background: var(--bg);
+        border-radius: 6px; padding: 8px; max-height: 320px; overflow: auto; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Smart Knowledge Base</h1>
+  <p class="sub">Ask a question about the indexed documents. Answers cite document and page.</p>
+
+  <section class="panel">
+    <div class="row">
+      <div><label for="api">API URL</label><input id="api" value="http://127.0.0.1:8765"></div>
+      <div><label for="collection">Collection</label><input id="collection" value="train"></div>
+    </div>
+    <label for="question">Question</label>
+    <textarea id="question" placeholder="e.g. Pull together every credit-risk red flag in Gammon India's FY2025-26 report."></textarea>
+    <div class="actions">
+      <button id="ask">Ask</button>
+      <span class="status" id="status"></span>
+    </div>
+  </section>
+
+  <section class="panel" id="result" hidden>
+    <div class="stats" id="stats"></div>
+    <div class="answer" id="answer"></div>
+    <details id="chunksBox"><summary id="chunksTitle">Evidence</summary><div id="chunks"></div></details>
+    <details><summary>Pipeline trace</summary><div id="trace"></div></details>
+  </section>
+
+  <section class="panel">
+    <details>
+      <summary>Index new documents</summary>
+      <p class="status">Upload a ZIP of PDFs. Re-using a collection name replaces that collection.</p>
+      <div class="row">
+        <div><label for="zip">ZIP file</label><input id="zip" type="file" accept=".zip"></div>
+        <div><label for="newCollection">Collection name</label><input id="newCollection" placeholder="my_docs"></div>
+      </div>
+      <div class="actions"><button id="index">Index</button><span class="status" id="indexStatus"></span></div>
+    </details>
+  </section>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
+const store = (k, v) => { try { v === undefined ? (v = localStorage.getItem(k)) : localStorage.setItem(k, v); } catch (e) {} return v; };
+["api", "collection"].forEach((id) => { const v = store("kb." + id); if (v) $(id).value = v; });
+
+function timer(el, label) {
+  const start = Date.now();
+  const t = setInterval(() => { el.textContent = `${label}… ${Math.round((Date.now() - start) / 1000)}s`; }, 500);
+  return () => clearInterval(t);
+}
+
+async function errorText(res) {
+  try { const body = await res.json(); return `${res.status}: ${body.detail || JSON.stringify(body)}`; }
+  catch (e) { return `${res.status}: ${res.statusText}`; }
+}
+
+$("ask").onclick = async () => {
+  const question = $("question").value.trim();
+  if (!question) return;
+  const api = $("api").value.replace(/\/$/, ""), collection = $("collection").value.trim();
+  store("kb.api", api); store("kb.collection", collection);
+  $("ask").disabled = true; $("status").className = "status";
+  const stop = timer($("status"), "Planning, retrieving, judging evidence and writing the answer");
+  try {
+    const res = await fetch(`${api}/query`, {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({collection_name: collection, query: question}),
+    });
+    if (!res.ok) throw new Error(await errorText(res));
+    render(await res.json());
+    $("status").textContent = "";
+  } catch (e) {
+    $("status").className = "status error";
+    $("status").textContent = `Request failed. ${e.message}\nIs the API running at ${api}?`;
+  } finally { stop(); $("ask").disabled = false; }
+};
+
+function render(data) {
+  $("result").hidden = false;
+  const s = data.statistics || {}, cost = (s.estimated_cost || {}).total_usd;
+  const chips = [
+    `${(s.query_seconds || 0).toFixed(1)} s`,
+    `${s.llm_calls ?? 0} LLM calls`,
+    `${(s.llm_input_tokens || 0).toLocaleString()} in / ${(s.llm_output_tokens || 0).toLocaleString()} out tokens`,
+    `${s.evidence_chunks ?? data.chunks.length} evidence chunks (${s.cited_chunks ?? 0} cited)`,
+    cost == null ? "cost: set prices in .env" : `$${cost.toFixed(4)}`,
+  ];
+  $("stats").innerHTML = chips.map((c) => `<span class="chip">${esc(c)}</span>`).join("");
+  $("answer").innerHTML = DOMPurify.sanitize(marked.parse(data.answer || ""));
+  $("chunksTitle").textContent = `Evidence (${data.chunks.length})`;
+  $("chunks").innerHTML = data.chunks.map((c) => `
+    <div class="chunk"><div class="meta">${esc(c.document)} · p.${esc(c.page_numbers.join(", "))} · ${esc(c.section || "")}
+      ${c.cited_in_answer ? '<span class="cited"> · cited</span>' : ""}</div>${esc(c.text)}</div>`).join("");
+  $("trace").innerHTML = data.trace.map((t) => `
+    <details><summary>${esc(t.step_name)}</summary><p class="status">${esc(t.description)}</p>
+      <pre>${esc(JSON.stringify({input: t.input, output: t.output}, null, 2))}</pre></details>`).join("");
+}
+
+$("index").onclick = async () => {
+  const file = $("zip").files[0], collection = $("newCollection").value.trim();
+  if (!file || !collection) { $("indexStatus").textContent = "Choose a ZIP and a collection name."; return; }
+  const form = new FormData(); form.append("file", file); form.append("collection_name", collection);
+  $("index").disabled = true; $("indexStatus").className = "status";
+  const stop = timer($("indexStatus"), "Indexing (OCR and profiling can take minutes)");
+  try {
+    const res = await fetch(`${$("api").value.replace(/\/$/, "")}/index`, {method: "POST", body: form});
+    if (!res.ok) throw new Error(await errorText(res));
+    const out = await res.json(), st = out.statistics;
+    $("indexStatus").textContent = `Indexed ${st.documents} documents into “${collection}” (${st.units} units, ${Math.round(st.indexing_seconds)} s).`;
+    $("collection").value = collection; store("kb.collection", collection);
+  } catch (e) {
+    $("indexStatus").className = "status error"; $("indexStatus").textContent = `Indexing failed. ${e.message}`;
+  } finally { stop(); $("index").disabled = false; }
+};
+$("question").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) $("ask").click(); });
+</script>
+</body>
+</html>

@@ -8,7 +8,6 @@ from .pipeline import KnowledgeBase
 
 def main():
     parser = argparse.ArgumentParser(description="Smart Knowledge Base for Agents")
-    parser.add_argument("--mode", choices=["baseline", "improved"])
     sub = parser.add_subparsers(dest="command", required=True)
     index = sub.add_parser("index")
     index.add_argument("source", type=Path)
@@ -19,10 +18,6 @@ def main():
     sub.add_parser("serve")
     args = parser.parse_args()
     settings = Settings.from_env()
-    if args.mode:
-        from dataclasses import replace
-
-        settings = replace(settings, mode=args.mode)
     if args.command == "serve":
         import uvicorn
         from .api import create_app

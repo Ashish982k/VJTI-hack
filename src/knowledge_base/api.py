@@ -1,8 +1,10 @@
 import logging
+import os
 from contextlib import asynccontextmanager
 import zipfile
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
@@ -32,6 +34,14 @@ def create_app(settings=None):
         lifespan=lifespan,
     )
     app.state.kb = kb
+    # CORS lets the static frontend (frontend/index.html) call the API; it adds no routes.
+    origins = os.getenv("KB_CORS_ORIGINS", "http://localhost:8080,http://127.0.0.1:8080,http://localhost:8766,http://127.0.0.1:8766")
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[o.strip() for o in origins.split(",") if o.strip()],
+        allow_methods=["POST"],
+        allow_headers=["Content-Type"],
+    )
 
     @app.post("/index")
     async def index(file: UploadFile = File(...), collection_name: str = Form(...)):

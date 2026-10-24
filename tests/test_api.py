@@ -15,7 +15,8 @@ from knowledge_base.pipeline import KnowledgeBase
 def pdf_bytes(*pages):
     with pymupdf.open() as pdf:
         for text in pages:
-            pdf.new_page().insert_text((40, 50), text)
+            page = pdf.new_page()
+            page.insert_textbox(pymupdf.Rect(40, 40, 560, 800), text, fontsize=10)
         return pdf.tobytes()
 
 
@@ -27,16 +28,17 @@ def zip_bytes(files):
     return stream.getvalue()
 
 
-class BaselineTests(unittest.TestCase):
+def offline_settings(directory):
+    return Settings(
+        data_dir=Path(directory), embedding_backend="hash", llm_backend="offline", ocr_backend="none"
+    )
+
+
+class ApiTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.settings = Settings(
-            data_dir=Path(self.temp.name),
-            mode="baseline",
-            embedding_backend="hash",
-            answer_backend="extractive",
-        )
+        self.settings = offline_settings(self.temp.name)
         self.content = zip_bytes(
             {"Acme_2025.pdf": pdf_bytes("Acme revenue is 100 million in 2025.", "Debt was 20 million.")}
         )
@@ -50,12 +52,14 @@ class BaselineTests(unittest.TestCase):
             self.assertEqual(
                 client.post("/query", json={"collection_name": "absent", "query": "revenue"}).status_code, 404
             )
+            self.assertEqual({r.path for r in client.app.routes}, {"/index", "/query"})
         result = KnowledgeBase(self.settings).query("acme", "Acme revenue")
         self.assertIn("100", result["answer"])
         self.assertEqual(result["chunks"][0]["page_numbers"], [1])
         self.assertTrue(
             all(set(s) == {"step_name", "description", "input", "output"} for s in result["trace"])
         )
+        self.assertIn("Acme_2025, p.1", result["answer"])
 
     def test_reject_unsafe_zip_and_collection(self):
         kb = KnowledgeBase(self.settings)
@@ -64,13 +68,12 @@ class BaselineTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             kb.index_zip(self.content, "../escape")
 
-    def test_cache_and_baseline_switches(self):
+    def test_embedding_cache_reused_across_collections(self):
         kb = KnowledgeBase(self.settings)
         first = kb.index_zip(self.content, "one")
         second = kb.index_zip(self.content, "two")
-        self.assertGreater(first["statistics"]["full_embedding"]["computed_input_tokens"], 0)
-        self.assertEqual(second["statistics"]["full_embedding"]["computed_input_tokens"], 0)
-        self.assertFalse(self.settings.effective().compact_embeddings)
+        self.assertGreater(first["statistics"]["embedding"]["computed_input_tokens"], 0)
+        self.assertEqual(second["statistics"]["embedding"]["computed_input_tokens"], 0)
 
 
 if __name__ == "__main__":

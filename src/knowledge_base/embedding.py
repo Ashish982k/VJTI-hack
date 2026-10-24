@@ -13,7 +13,7 @@ from .text import digest, terms, tokens
 class Embedder:
     def __init__(self, settings):
         self.settings = settings
-        self.identity = f"v1:{settings.embedding_backend}:{settings.embedding_model}"
+        self.identity = f"v2:{settings.embedding_backend}:{settings.embedding_model}"
         self.model = None
         self.lock = RLock()
         settings.data_dir.mkdir(parents=True, exist_ok=True)
@@ -59,6 +59,11 @@ class Embedder:
                 value = int.from_bytes(hashlib.sha256(word.encode()).digest()[:8], "little")
                 result[row, value % 512] += 1
         return result / np.maximum(np.linalg.norm(result, axis=1, keepdims=True), 1e-12)
+
+    def encode_queries(self, texts):
+        # Asymmetric retrieval models (e.g. BGE) expect an instruction prefix on queries only.
+        prefix = self.settings.embedding_query_prefix if self.settings.embedding_backend != "hash" else ""
+        return self.encode([prefix + t for t in texts])
 
     def encode(self, texts):
         with self.lock:

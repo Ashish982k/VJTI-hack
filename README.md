@@ -1,97 +1,106 @@
 # VJTI hack — Smart Knowledge Base for Agents
 
-Python backend for the supplied Smart Knowledge Base problem statement. Source PDFs and benchmark data remain in `Train/` locally and are excluded from Git. Secrets, models and generated indexes are also excluded.
+Python backend for the Smart Knowledge Base problem statement. It runs one pipeline: **catalog-routed,
+judge-filtered evidence retrieval**. Source PDFs and benchmark data stay in `Train/` locally and are
+excluded from Git, as are secrets, models and generated indexes.
+
+```
+PDF → paragraph units (+ PaddleOCR for scanned pages) → LLM document catalog
+query → plan (documents + aspects) → scoped dense+BM25 candidates → LLM evidence judge
+      → bounded coverage recovery → cited analyst answer → figure verification
+```
+
+See [docs/architecture.md](docs/architecture.md) for the design and why each piece exists, and
+[docs/api.md](docs/api.md) for the HTTP contract.
 
 ## Quick start
 
-```powershell
-python -m venv .venv
-.venv\Scripts\python -m pip install --upgrade pip setuptools
-.venv\Scripts\python -m pip install -e ".[semantic,observability]"
-Copy-Item .env.example .env
-# Configure OPENCODE_API_KEY and Langfuse credentials in .env.
-.venv\Scripts\python -m knowledge_base.cli index Train/Documents --collection train
-.venv\Scripts\python -m knowledge_base.cli --mode baseline query "What is the revenue?" --collection train
-.venv\Scripts\python -m knowledge_base.cli serve
+```bash
+python3.11 -m venv .venv
+.venv/bin/python -m pip install -e ".[semantic,observability,ocr,dev]"
+cp .env.example .env   # set LLM_API_KEY (+ LLM_BASE_URL/LLM_MODEL) and the Langfuse keys
+.venv/bin/python -m knowledge_base.cli index ../Train/Documents --collection train
+.venv/bin/python -m knowledge_base.cli query "What are Gammon India's FY2026 payment defaults?" --collection train
+.venv/bin/python -m knowledge_base.cli serve
 ```
 
-`POST /index`: multipart fields `file` (ZIP) and `collection_name`. `POST /query`: JSON `{"collection_name":"train","query":"your question"}`. The PS names these logical fields but supplies no stricter transport schema. The query response includes `answer`, original `chunks`, `trace`, and optional `statistics`. Every trace entry contains exactly `step_name`, `description`, `input`, `output`. These are the only two HTTP routes.
+On Windows use `.venv\Scripts\python` and `Copy-Item .env.example .env`. On macOS, if
+`import knowledge_base` fails after an editable install, run `chflags nohidden .venv/lib/python3.11/site-packages/*.pth`
+(Python skips hidden `.pth` files).
 
-For tests without downloads/API calls set `KB_EMBEDDING_BACKEND=hash` and `KB_ANSWER_BACKEND=extractive`. This is a lexical smoke-test mode, not a semantic RAG quality result. Real RAG uses local sentence-transformer embeddings plus the configured OpenCode answer model. Long embedding inputs are windowed, avoiding silent truncation. The default API gateway/model follows the supplied notebook and can be configured.
+`POST /index`: multipart `file` (ZIP of PDFs) and `collection_name`. `POST /query`: JSON
+`{"collection_name": "train", "query": "..."}`. The response has `answer`, `chunks` (every accepted
+evidence paragraph with document, page and section), `trace` (each entry has exactly `step_name`,
+`description`, `input`, `output`) and `statistics`. These are the only two routes.
 
-Run tests: `python -m unittest discover -s tests -v` after installing the package.
+## Ask questions in the browser
 
-## Baseline, improvements and ablations
+```bash
+.venv/bin/python -m knowledge_base.cli serve                                  # API on :8000
+.venv/bin/python -m http.server 8080 --bind 127.0.0.1 --directory frontend    # page on :8080
+```
 
-Use `KB_MODE=baseline` or `kb --mode baseline ...` for the full-chunk vector baseline. Use `KB_MODE=improved` for feature-controlled retrieval. The answer model, prompt, temperature (0), and validation are shared across experiments.
+Open http://127.0.0.1:8080, ask a question, and read the cited answer, the evidence paragraphs and the
+pipeline trace. The page can also upload a ZIP to index a new collection. The API allows that page's
+origin via CORS (`KB_CORS_ORIGINS`); it still exposes only `/index` and `/query`.
 
-| Environment variable | Default | Purpose |
+**Groq free tier:** each model allows about 8,000 tokens per minute, so `.env.example` lists smaller
+budgets and spreads calls over three models. Broad questions then take a minute or more, and the answer
+sees fewer passages than with a paid provider. The official evaluator itself still calls OpenCode.
+
+## Configuration
+
+| Variable | Default | Purpose |
 |---|---|---|
-| `KB_METADATA_ROUTING` | `true` | Route by document identity and reporting period |
-| `KB_COMPACT_EMBEDDINGS` | `true` | Search compact-description vectors |
-| `KB_HYBRID_SEARCH` | `true` | Fuse vector search with original-text BM25 |
-| `KB_MULTI_SECTION` | `true` | Independent section retrieval and bounded recovery |
-| `KB_COVERAGE_SELECTION` | `true` | Prefer new coverage under a token budget |
-| `KB_INDEX_VARIANTS` | `both` | Store `full`, `compact`, or `both` representations |
-| `KB_CHUNK_TOKENS` / `KB_OVERLAP_TOKENS` | `400` / `60` | Lexical chunk-size estimates |
-| `KB_SKETCH_TOKENS` | `120` | Lexical sketch-size cap; model token counts are measured separately |
-| `KB_TOP_K` / `KB_CANDIDATE_K` | `6` / `40` | Narrow evidence and candidate budgets |
-| `KB_BROAD_K` / `KB_CONTEXT_TOKENS` | `24` / `10000` | Broad evidence limit and lexical context budget |
-| `KB_MAX_REQUIREMENTS` / `KB_MAX_FOLLOWUPS` | `12` / `4` | Bound section planning and recovery |
-| `KB_MAX_OUTPUT_TOKENS` | `3000` | Answer-generation output limit |
-
-Boolean variables accept `true`/`false` or `1`/`0`. Baseline mode disables all five feature switches regardless of their environment values. Index with `both` for comparisons; compact-only production indexing avoids computing full-chunk vectors. Changes to chunk/sketch settings require reindexing. A changed embedding backend/model is rejected against incompatible stored indexes.
-
-The observed strongest precision/recall proxy balance was experiment C. To reproduce its settings in the API, use improved mode with compact embeddings and hybrid search enabled and the other three switches disabled. This observation is limited to this training set and is not an official score or a hidden-test guarantee.
+| `KB_LLM_BACKEND` | `llm` | `offline` swaps planning, judging and answering for rules (tests and diagnostics only) |
+| `LLM_API_KEY` / `LLM_BASE_URL` | — / OpenCode | Any OpenAI-compatible provider (OpenCode, Groq, ...); `OPENCODE_*` names also work |
+| `LLM_MODEL` / `LLM_FAST_MODEL` | `deepseek-v4.1-flash` / same | Answer model / cheaper model for profiling, planning and judging. Comma-separated lists rotate and skip rate-limited models |
+| `KB_OCR_BACKEND` | `paddle` | `none` skips scanned pages |
+| `KB_EMBEDDING_MODEL` | `BAAI/bge-small-en-v1.5` | Local embedding model (`KB_EMBEDDING_BACKEND=hash` for tests) |
+| `KB_UNIT_MIN_WORDS` / `KB_UNIT_MAX_WORDS` | `60` / `220` | Paragraph unit size (re-index after changing) |
+| `KB_MAX_DOCUMENTS` | `8` | Documents the planner may route to |
+| `KB_MAIN_QUERY_K` / `KB_ASPECT_QUERY_K` / `KB_PER_DOCUMENT_K` | `40` / `20` / `8` | Candidate depth for the question, each aspect, each routed document |
+| `KB_MAX_CANDIDATES` / `KB_JUDGE_BATCH` | `240` / `30` | Judge workload per query |
+| `KB_RECOVERY_K` | `15` | Extra candidates per uncovered aspect (0 disables recovery) |
+| `KB_MAX_EVIDENCE` / `KB_CONTEXT_TOKENS` | `160` / `60000` | Returned evidence cap / answer context budget |
+| `KB_MAX_OUTPUT_TOKENS` | `8000` | Answer length limit |
+| `KB_LLM_CONCURRENCY` | `6` | Parallel judge/profile calls |
 
 ## Evaluate
 
-The six experiments are A baseline, B routing only, C sketches + BM25, D multi-section only, E coverage selection only, and F all improvements. Only document PDFs are indexed; benchmark answers/evidence are consumed exclusively by the evaluation harness after retrieval.
+```bash
+# Retrieval diagnostics only (no LLM calls; rule routing, top-ranked evidence):
+.venv/bin/python -m evaluation.run --benchmark ../Train/Benchmarks/benchmark_100.jsonl --offline --output reports/runs/offline
 
-```powershell
-# All 100 questions, without answer-model or judge API calls:
-.venv\Scripts\python -m evaluation.run --collection train --retrieval-only --limit 100 --output reports/runs/local
+# Full pipeline + the UNMODIFIED official notebook evaluator (paid calls):
+.venv/bin/python -m evaluation.run --benchmark ../Train/Benchmarks/benchmark_100.jsonl --official --output reports/runs/official
 
-# Generate answers and run the UNMODIFIED official notebook evaluator:
-$env:KB_ANSWER_BACKEND='opencode'
-.venv\Scripts\python -m evaluation.run --collection train --official --limit 100 --output reports/runs/official
-
-# Focused run; still the same benchmark and model settings:
-.venv\Scripts\python -m evaluation.run --collection train --experiments AC --official --limit 10 --output reports/runs/small
+# A subset while iterating:
+.venv/bin/python -m evaluation.run --benchmark ../Train/Benchmarks/benchmark_100.jsonl --official --ids A01,B05,C10
 ```
 
-Official evaluation needs the organizer's `OPENCODE_API_KEY` and makes paid answer and judge calls. `evaluation/official/Evaluation.ipynb` is an exact copy of the supplied notebook; its SHA-256 is checked before execution. The adapter runs its original definitions and skips only the example invocation. Scoring definitions are not changed. In particular, the official context-recall formula can exceed one; the harness does not clamp or redefine it.
-
-Each run exports `comparison.csv`, `comparison.json`, per-experiment details, and response JSONL. Official runs additionally export the complete judge results and point-matching explanations. Failures are reported and prevent publication of success-only averages. Separate output directories preserve earlier experiments.
-
-Read [observed results](reports/RESULTS.md), [architecture](docs/architecture.md), and [API details](docs/api.md). The checked-in summary contains actual 100-question retrieval measurements, not generated official scores.
+`evaluation/official/Evaluation.ipynb` is a byte-identical copy of the supplied notebook; its SHA-256 is
+checked before it is executed, and only its demo cell is skipped. Runs write `summary.json`,
+`details.json`, `responses.jsonl` and, for official runs, `official.json` with the judge's point matching.
+Gold answers and chunks are only read after each response is produced.
 
 ## Tokens, cost and tracing
 
-Set `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, and `LANGFUSE_BASE_URL` to enable hosted traces. See [Langfuse SDK documentation](https://langfuse.com/docs/observability/sdk/instrumentation) and [usage/cost tracking](https://langfuse.com/docs/observability/features/token-and-cost-tracking). Query/retrieval/generation spans record stage latency, token usage and configured API prices. Each query also emits the required four-field trace in its HTTP response. Local summaries are appended to `data/telemetry.jsonl` even without Langfuse credentials.
-
-Set `KB_LLM_INPUT_PRICE` and `KB_LLM_OUTPUT_PRICE` in USD per million tokens. Unknown prices remain `null`, not zero. Local embeddings incur no provider API charge, but compute cost is excluded. Final-model tokens come from the provider's usage response where available. Planning and sketch generation use no LLM. Official-judge spend is separate and is not measured by the supplied evaluator.
-
-The default OpenCode endpoint/model follows the official notebook. [Current OpenCode documentation](https://docs.opencode.ai/docs/zen/) also describes a Zen endpoint; configure `OPENCODE_BASE_URL` for the gateway supplied by your organizers. The official evaluator deliberately retains its original endpoint and model.
+Set `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY` and `LANGFUSE_BASE_URL`. Each query is a Langfuse trace
+with one observation per pipeline stage. LLM stages are generation observations with token usage and cost
+(set `KB_LLM_INPUT_PRICE` / `KB_LLM_OUTPUT_PRICE` in USD per million tokens; unknown prices stay `null`).
+`statistics.stages` in every response repeats per-stage latency and tokens, and `data/telemetry.jsonl`
+keeps a local ledger even without Langfuse.
 
 ## Verification and deployment
 
-```powershell
-.venv\Scripts\python -m unittest discover -s tests -v
-.venv\Scripts\python -m ruff check src tests evaluation scripts
-.venv\Scripts\python scripts/api_smoke.py
-
-# Docker deployment, once Docker and organizer server access are available:
+```bash
+.venv/bin/python -m unittest discover -s tests -v
+.venv/bin/python -m ruff check src tests evaluation scripts
+.venv/bin/python scripts/api_smoke.py
 docker build -t vjti-kb .
 docker run --env-file .env -p 8000:8000 -v vjti-data:/data -v vjti-models:/models vjti-kb
 ```
 
-The smoke test starts a temporary localhost server, indexes an in-memory PDF ZIP, verifies a query/citations/trace, and shuts it down. GitHub Actions runs lint, unit/integration tests and the HTTP smoke test without downloading a model or using secrets.
-
-The first real local index took about five minutes for 34 readable PDFs, excluding model download. Treat that as an observation on this machine, not a deployment timeout guarantee. One supplied PDF requires OCR. Model loading/cache warmup, cold embeddings, network/model generation and judge latency must be measured on the organizer's server before committing to a timeout.
-
-No API credentials or deployment access were supplied: real OpenCode answer generation, official metrics, hosted Langfuse delivery and deployment are not verified. Provider integration and support checks are covered by mocked tests; local semantic retrieval and real HTTP ingestion/querying were exercised.
-
-## Layout
-
-`src/knowledge_base/` contains ingestion, metadata, sketches, embeddings, search, planning, selection, generation, storage, telemetry and API modules. `evaluation/` contains the independent ablation runner and unchanged official evaluator. `tests/`, `scripts/`, `docs/`, and `reports/` contain verification, the HTTP smoke test, design/API documentation and measured summaries. `Train/`, model downloads, generated indexes, full response dumps and `.env` stay local and are Git-ignored.
+Tests use a hash embedder, offline rules and a scripted LLM, so CI needs no model downloads or secrets.
+See [reports/RESULTS.md](reports/RESULTS.md) for measured indexing time and retrieval diagnostics.

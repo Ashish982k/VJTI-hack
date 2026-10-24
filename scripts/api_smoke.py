@@ -29,8 +29,8 @@ def main():
             **os.environ,
             "KB_DATA_DIR": directory,
             "KB_EMBEDDING_BACKEND": "hash",
-            "KB_ANSWER_BACKEND": "extractive",
-            "KB_MODE": "improved",
+            "KB_LLM_BACKEND": "offline",
+            "KB_OCR_BACKEND": "none",
             "LANGFUSE_PUBLIC_KEY": "",
             "LANGFUSE_SECRET_KEY": "",
         }
@@ -82,7 +82,7 @@ def main():
                         set(s) == {"step_name", "description", "input", "output"} for s in response["trace"]
                     )
                     print(
-                        "HTTP smoke passed: ZIP index, improved query, original evidence, page citations and exact trace fields."
+                        "HTTP smoke passed: ZIP index, original evidence, page citations and exact trace fields."
                     )
             finally:
                 server.terminate()

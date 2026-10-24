@@ -10,7 +10,7 @@ Multipart form: `file` is a ZIP containing PDFs; `collection_name` is 1–80 let
 curl.exe -X POST http://localhost:8000/index -F "collection_name=train" -F "file=@documents.zip"
 ```
 
-Success returns `status`, `collection_name`, and `statistics` including document/chunk counts, extraction errors, input tokens for each representation, cache savings, and indexing latency. At least one readable PDF is required. Reusing a collection name atomically replaces that collection; other collections are unaffected. Partial ingestion is explicit in `statistics.errors`. A wholly unreadable archive fails without replacing the collection.
+Success returns `status`, `collection_name` and `statistics`: document and unit counts, extraction errors, OCR page count, embedding tokens, profiling LLM usage and indexing latency. At least one readable PDF is required. Reusing a collection name atomically replaces that collection; other collections are unaffected. Partial ingestion is explicit in `statistics.errors`. A wholly unreadable archive fails without replacing the collection.
 
 ## POST /query
 
@@ -20,10 +20,10 @@ Success returns `status`, `collection_name`, and `statistics` including document
 
 Response fields:
 
-- `answer`: grounded synthesis, explicit abstention, or labeled extractive preview in offline mode.
-- `chunks`: original `text`, `document`, `page_numbers` (physical PDF pages, starting at 1), `page_label`, `chunk_id`, `document_id`, company, periods, type, heading, collection and retrieval score. A `sketch` may be included for debugging, but it is never the generation evidence.
-- `trace`: ordered inference steps, each containing exactly `step_name`, `description`, `input`, `output`.
-- `statistics`: optional diagnostic field for stage tokens, latency, budget and coverage, API cost estimate, and tracing status.
+- `answer`: Markdown analyst answer from the evidence only, with `[document, p.N]` citations. Offline mode returns a labelled extractive list.
+- `chunks`: every evidence paragraph the judge accepted, ordered by document and page: `text` (original wording), `document`, `page_numbers` (physical PDF pages from 1), `page_label`, `section`, `chunk_id`, `evidence_id`, `document_id`, `collection_name`, `cited_in_answer` and `retrieval_score`.
+- `trace`: ordered steps `query_planning`, `candidate_retrieval`, `evidence_judgement`, `coverage_recovery` (LLM mode), `evidence_assembly`, `llm_answer_generation`, `answer_verification`. Each contains exactly `step_name`, `description`, `input`, `output`.
+- `statistics`: LLM calls and tokens, per-stage latency and usage (`stages`), candidate and evidence counts, estimated API cost and tracing status.
 
 Errors: 400 for invalid archives/collection names or incompatible indexes, 404 for missing collections, 422 for malformed request bodies, and 503 for unavailable model/configuration or processing errors. Logs retain failure details; API error responses do not include provider credentials.
 

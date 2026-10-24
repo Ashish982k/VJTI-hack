@@ -1,34 +1,143 @@
 # Observed results — 24 October 2026
 
-All six experiments completed all 100 supplied questions with no retrieval failures. This was semantic MiniLM retrieval with extractive previews: no answer-model or official-judge calls. The four official metrics are **not measured** and are null in the exported JSON/CSV.
+Pipeline: catalog-routed, judge-filtered evidence retrieval (see `docs/architecture.md`). The earlier A–F
+ablation tables measured a different, retired pipeline and were removed.
 
-| Experiment | Page recall proxy | Delta vs A | Page precision proxy | Lexical Recall@6 proxy | Mean warm query ms | Mean context estimate |
+## Indexing (training corpus, MacBook, Apple GPU for embeddings)
+
+- 35/35 PDFs indexed, including `SAMA_EN_3575_VER1.pdf` (scanned) via PaddleOCR; 98 pages OCR'd in total.
+- 36,029 paragraph units (60–220 words; gold chunks have a median of 63 words).
+- Groq profiling: 33 LLM profiles, 2 rule-based fallbacks after free-tier rate limits; 48k input / 10k output tokens.
+- Parse + OCR 735 s, total 1,526 s on a cold OCR cache. The OCR cache makes re-indexing the same PDFs much faster.
+
+## Spot checks through the HTTP API (Groq free tier: gpt-oss-120b answers; gpt-oss-20b + qwen3.8-27b plan/judge)
+
+| Question | Result vs gold | Evidence | Time | LLM tokens in/out |
+|---|---|---|---|---|
+| A34 BSF NPL coverage 2025 | 178.4% — correct; missed "down 3.3 pp YoY" | 1 | 51 s | 17.6k / 2.2k |
+| A33 Refex rating agency | Acuité, ACUITE A- (Stable) reaffirmed — correct; gold could not read the rating | 4 | 17 s | 11.8k / 0.7k |
+| A01 Gammon credit-risk red flags | Lender actions, NPA since 2017, ₹2,636.59 cr recall, ARCs, qualified opinion, going concern, suspension — correct; missed principal/interest default totals and SARFAESI possession | 27 (gold: 91) | 41 s | 24.4k / 3.9k |
+
+These are three hand-checked questions, not the official metrics. The official notebook needs an OpenCode
+key (`OPENCODE_API_KEY`) and has not been run. On Groq's free tier (about 8k tokens per minute per model)
+the candidate and context budgets are deliberately small, which limits recall on broad questions.
+
+## Official evaluator, OpenCode (24 October 2026)
+
+Same three questions (A33, C30, A34), unchanged official notebook, answers by `deepseek-v4.1-flash`.
+
+| Planner/judge model | Mean query time | Output tokens/query | Answer P | Answer R | Context P | Context R |
 |---|---:|---:|---:|---:|---:|---:|
-| A: Baseline | 0.0596 | +0.0000 | 0.2543 | 0.0785 | 4.64 | 2054 |
-| B: Metadata routing | 0.0584 | -0.0012 | 0.2563 | 0.0892 | 6.25 | 1911 |
-| C: Compact + BM25 | 0.0777 | +0.0182 | 0.3123 | 0.1107 | 8.40 | 2186 |
-| D: Multi-section | 0.1279 | +0.0684 | 0.1905 | 0.0800 | 145.78 | 7115 |
-| E: Coverage selection | 0.0344 | -0.0251 | 0.2027 | 0.0529 | 40.75 | 1354 |
-| F: All improvements | 0.1388 | +0.0792 | 0.2297 | 0.0655 | 171.75 | 6361 |
+| deepseek-v4.1-flash (reasoning) | 268 s | 34,390 | 0.67 | 0.55 | 0.61 | 1.33 |
+| minimax-m2.7 (no reasoning) | 21 s | 2,574 | 0.65 | 0.67 | 0.84 | 1.33 |
 
-Page proxies compare physical (document, page) pairs with benchmark page numbers; printed-page offsets can lower these diagnostics. Lexical Recall@6 requires at least 60% of the gold chunk's distinct lexical terms in one of the first six returned passages from the same document. These are not the official LLM-judged context metrics. The first six passages in D/E/F are a coverage-oriented ordering, not a pure relevance ranking.
+Three narrow questions only: not representative of the broad A/B/C questions. Context recall can exceed 1
+because the official formula divides relevant returned chunks by the gold chunk count. On six broad
+questions (A05, A20, B05, B20, C05, C20) the official evaluator's own deepseek calls failed
+(`finish_reason=length` at its fixed 10,000-token limit, or truncated JSON) on 5 of 6, so no scores exist
+for them yet.
 
-A/B/C/E allow six final passages; D/F allow 24 for broad questions. All use a 10,000 lexical-token context budget. Larger retrieval budgets explain part of the higher page recall in D/F. Model, index, query-embedding and text-feature caches were warmed before measurement; the recorded warmup was 17.63 seconds. These millisecond values exclude model loading, cold query embedding and remote answer generation, and are not production end-to-end latency.
+## Six broad questions (A05, A20, B05, B20, C05, C20), 24 October 2026
 
-C improved both page precision and recall proxies over A. F raised page recall but lowered page precision and first-six lexical coverage, increased context by roughly 3.1 times, and increased warm retrieval latency. E reduced context at the expense of recall. B had mixed results: slightly lower page recall, slightly higher page precision, and higher lexical coverage. Consequently the data does not establish that all four improvements together are the best configuration, nor that fewer embedding tokens improve answer quality.
+Pipeline: minimax-m2.7 planner/judge, deepseek-v4.1-flash answers. All six answered in 30–114 s
+(previously 4–7 minutes each).
 
-## Indexing observations
+**Official evaluator (deepseek-v4.1-flash judge): 0 of 6 scoreable.** Its own calls fail at the fixed
+`max_tokens=10000` (`finish_reason=length` or truncated JSON) when splitting answers into points. A probe
+on one of our answers decomposed 300/450/600 words but failed at 800; the gold answers for A05, A20 and
+B20 (1,019–1,235 words) also fail to decompose, so those questions cannot be scored by that setup at all.
 
-- 35 input PDFs; 34 readable PDFs; 13,279 chunks. `SAMA_EN_3575_VER1.pdf` requires OCR and was explicitly skipped. Partially empty pages are recorded in document metadata.
-- Full-chunk embedding inputs: 4,518,945 tokenizer-counted tokens.
-- Compact embedding inputs: 1,843,757 tokenizer-counted tokens; **59.20% fewer logical input tokens**.
-- Both representations were deliberately built for ablations. The first build computed 6,201,767 embedding tokens; the final metadata rebuild computed another 495,400 tokens for changed sketches and reused all 13,279 full-chunk vectors. These are actual shared-cache run counts, not independent cold full/compact runs.
-- In the final rebuild, compact indexing reused 9,829 cached/duplicate inputs. Comparing only the final 495,400 computed tokens with a cold baseline would overstate savings; the 59.20% figure instead compares the complete logical input sizes.
-- The first index build measured 297.73 seconds and the cached metadata rebuild measured 193.26 seconds up to index assembly; initial model download and final persistence were not included in those measurements. Persisted data is available locally under `data/collections/train/`.
-- Sketch/planning LLM tokens: zero. Local embedding API charges: zero. Hardware cost is not estimated. Real answer/judge token usage, total deployment cost, and hosted Langfuse delivery remain unmeasured.
+**Proxy: the same unchanged evaluator code with `OPENCODE_MODEL=minimax-m2.7` (configuration cell):**
 
-## Reproduce and next experiments
+| Question | Returned / gold chunks | Answer P | Answer R | Context P | Context R |
+|---|---|---:|---:|---:|---:|
+| A05 | 90 / 15 | 0.21 | 0.96 | 0.89 | 5.33 |
+| A20 | 47 / 60 | 0.61 | 0.28 | 0.79 | 0.62 |
+| B05 | 71 / 30 | 0.40 | 0.80 | 0.17 | 0.40 |
+| B20 | 97 / 82 | 0.59 | 0.40 | 0.13 | 0.16 |
+| C05 | 106 / 62 | 0.00 | 0.67 | 0.42 | 0.71 |
+| C20 | 83 / 120 | 0.58 | 0.97 | 0.36 | 0.25 |
+| **Mean** | | **0.40** | **0.68** | **0.46** | **1.24** (0.43 without A05) |
 
-See the README for exact indexing and evaluation commands. The checked-in `comparison.json`, `comparison.csv`, and `runtime.json` preserve configuration, benchmark/evaluator hashes, budgets and installed versions. Full responses and per-question details remain local under `reports/runs/semantic-100-final/`.
+Proxy scores are not comparable to the official judge; the minimax judge is also inconsistent (C05: 0.00
+precision yet 0.67 recall).
 
-Next: supply OpenCode/Langfuse credentials and run the unchanged official evaluator; compare C/F against a baseline with the same larger context budget; test routing confidence on held-out documents; add OCR and stronger table extraction; revise coverage weighting with a separate validation split. Do not infer the PS's 0.95 target from these proxy measurements.
+## Precision changes: grade-3-only answer evidence, line-deletion editor, ~350-word cap (24 October 2026)
+
+**Official judge (deepseek-v4.1-flash), 3 narrow questions:**
+
+| | Answer P | Answer R | Context P | Context R |
+|---|---:|---:|---:|---:|
+| Before | 0.65 | 0.67 | 0.84 | 1.33 |
+| After | **0.92** | 0.54 | 0.63 | 1.21 |
+
+Per question after (P/R/CP/CR): A34 1.00/0.33/0.50/1.00, A33 0.75/0.44/1.00/2.00, C30 1.00/0.83/0.38/0.62.
+Context changes come from judge run-to-run variance (retrieval and judging were not changed).
+
+**Six broad questions, proxy judge (minimax-m2.7):** the proxy's answer precision is invalid (it lists
+every answer point as "extra" while matching them to gold points), so only recall and context are shown.
+
+| | Answer R | Context P | Context R (excl. A05) |
+|---|---:|---:|---:|
+| Before | 0.68 | 0.46 | 0.43 |
+| After | 0.50 | **0.58** | **0.58** |
+
+Broad answers (444–575 words) still failed the official evaluator's own length limit.
+
+## Recall recovery: aspect-linked grade-2 evidence, answer outline, figure qualifiers, "not stated" lines
+
+**Official judge, 3 narrow questions (A33, A34, C30):**
+
+| Version | Answer P | Answer R | Context P | Context R |
+|---|---:|---:|---:|---:|
+| v1 fast judge | 0.65 | 0.67 | 0.84 | 1.33 |
+| v2 precision changes | 0.92 | 0.54 | 0.63 | 1.21 |
+| v3 recall recovery | 0.73 | 0.65 | 0.87 | 1.25 |
+
+**Proxy judge, 6 broad questions (answer precision omitted: proxy invalid):**
+
+| Version | Answer R | Context P | Context R (excl. A05) |
+|---|---:|---:|---:|
+| v1 | 0.68 | 0.46 | 0.43 |
+| v2 | 0.50 | 0.58 | 0.58 |
+| v3 | 0.62 | 0.61 | 0.51 |
+
+Notes: the official judge decomposes citations into points, so page numbers matter; 798 of ~840 gold chunks
+match our physical page numbers (mismatches are repeated text). A33's gold says the rating table is an
+unreadable image while our OCR reads it, which costs 3 extra and 3 missing points. Broad v3 answers grew
+to 432–849 words and still fail the official evaluator's length limit.
+
+## Failure buckets, 54 of 100 questions (deepseek answers, minimax judge; run stopped when OpenCode credit ran out)
+
+`python -m evaluation.analyze` maps each gold chunk to our indexed paragraphs (no LLM calls) and traces it:
+
+| | Questions | Gold chunks / question | Returned / question | Gold returned | Never retrieved | Judge rejected | Wrong document |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Narrow | 5 | 5 | 4 | 20% | 50% | 30% | 0% |
+| Broad | 49 | 105 | 77 | 25% | **70%** | 4% | 2% |
+
+Overall: 5% of gold chunks have no counterpart in our index (extraction gaps), routing recall is 0.99,
+and 24% of returned chunks match a gold chunk lexically. Retrieval recall on broad questions is the
+dominant loss: gold sets average 105 chunks (up to 352) spread over many pages, while candidate search
+is capped and chunk-level. Full table: `reports/runs/full100/failure-analysis.md` (local).
+
+The pipeline now runs on Groq (gpt-oss-120b answers; gpt-oss-20b + qwen3.8-27b plan/judge) with
+free-tier budgets in `.env`. Official scoring needs OpenCode credit; Groq's ~8k-token request limit is too
+small for the evaluator's context-judge call on broad questions.
+
+## Proxy scores with a Groq judge (10 saved answers, 24 October 2026)
+
+Unchanged evaluator code with the configuration cell pointed at Groq `openai/gpt-oss-120b`; retrieved
+chunks judged in batches of 20 by the unchanged `context_precision_recall` (Groq rejects one 59-chunk
+request with HTTP 413) and summed; an HTTP-level wait on Groq 429s. Answers are the saved v3 deepseek
+answers. Proxy only: a different judge model from the official deepseek-v4.1-flash.
+
+| Group | n | Answer P | Answer R | Context P | Context R |
+|---|---:|---:|---:|---:|---:|
+| All | 10 | 0.71 | 0.41 | 0.68 | 0.74 |
+| Narrow (A09, A33, A34, A35, A36) | 5 | 0.73 | 0.32 | 0.76 | 1.07 |
+| Broad (A07, A16, B05, B08, B19) | 5 | 0.68 | 0.49 | 0.61 | 0.41 |
+
+Answer points: 93 gold facts missing, 18 gold "not stated" points missing, 36 extra facts, 6 extra
+citation points. A36 asks about a 2025 report when only the 2024 report exists: the judge rejected every
+passage as the wrong period, while the gold answer uses the 2024 report and notes the mismatch.

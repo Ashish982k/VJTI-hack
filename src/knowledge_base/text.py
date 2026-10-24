@@ -1,6 +1,5 @@
 import hashlib
 import re
-from functools import lru_cache
 
 TOKEN_RE = re.compile(r"\w+|[^\w\s]", re.UNICODE)
 STOP = set(
@@ -17,24 +16,32 @@ def terms(text):
     return [t.lower() for t in tokens(text) if len(t) > 1 and t.isalnum() and t.lower() not in STOP]
 
 
-@lru_cache(maxsize=32768)
-def term_set(text):
-    return frozenset(terms(text))
-
-
 def digest(text):
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def chunk_text(text, size, overlap):
-    spans = list(TOKEN_RE.finditer(text))
-    for start in range(0, len(spans), size - overlap):
-        end = min(start + size, len(spans))
-        yield text[spans[start].start() : spans[end - 1].end()]
-        if end == len(spans):
-            break
+SENTENCE_RE = re.compile(r"(?<=[.!?;])\s+(?=[\"'(\[A-Z0-9•-])")
 
 
-def truncate(text, limit):
-    spans = list(TOKEN_RE.finditer(text))
-    return text if len(spans) <= limit else text[: spans[limit - 1].end()]
+def words(text):
+    return len(text.split())
+
+
+def split_long(text, limit):
+    """Split an over-long paragraph on sentence boundaries into pieces of at most ~limit words."""
+    pieces, current = [], []
+    for sentence in SENTENCE_RE.split(text):
+        sentence_words = sentence.split()
+        while len(sentence_words) > limit:
+            if current:
+                pieces.append(" ".join(current))
+                current = []
+            pieces.append(" ".join(sentence_words[:limit]))
+            sentence_words = sentence_words[limit:]
+        if current and len(current) + len(sentence_words) > limit:
+            pieces.append(" ".join(current))
+            current = []
+        current.extend(sentence_words)
+    if current:
+        pieces.append(" ".join(current))
+    return pieces

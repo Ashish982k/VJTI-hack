@@ -13,3 +13,4 @@ Train.zip
 codeguard_dev.jsonl
 reports/runs/
 .coverage
+.DS_Store

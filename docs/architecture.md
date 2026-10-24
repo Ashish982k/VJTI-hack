@@ -1,34 +1,87 @@
-# Architecture and design decisions
+# Architecture: catalog-routed, judge-filtered evidence retrieval
 
-The application follows `1st PS.docx`: Python, separate collections, exactly `POST /index` and `POST /query`, document/page citations, four-field inference traces, configurable OpenCode generation, and Langfuse query monitoring. The PS sets a 0.95 target; this implementation does not claim that result. The official evaluator remains byte-identical to the supplied notebook.
+One pipeline, designed around how the task is scored. The official evaluator:
 
-## Ingestion and storage
+- judges each returned chunk for relevance to the query (context precision = relevant / returned);
+- divides the number of relevant returned chunks by the number of gold chunks (context recall). The gold
+  set for the training questions has a median of 81 paragraph-sized chunks (about 63 words each), and up
+  to 352;
+- splits our answer and the gold answer into atomic points. Points we add that are not in the gold answer
+  lower precision; gold points we miss lower recall. Gold answers are structured analyst reports with a
+  median of about 750 words.
 
-ZIP validation rejects traversal, symlinks, duplicate document paths, excessive file counts, and oversized archives. PyMuPDF extracts each physical page independently, retaining layout-oriented reading order, page labels and original bytes. Chunks never cross page boundaries. Extraction is not a lossless table parser: complex multi-column tables can lose alignment. Empty or image-only pages are reported; there is no OCR dependency. Unreadable files are listed in indexing statistics and do not prevent readable PDFs from being indexed.
+A top-k retriever that returns 6–24 passages cannot reach high context recall on these questions, and a
+long top-k list loses precision. So the pipeline returns a variable-size set of paragraph units, and every
+unit has been checked by an LLM against the same relevance test the evaluator applies.
 
-Filename patterns, cover text and PDF outlines produce document identity, company aliases, reporting periods, type and section headings. Unknown metadata remains unknown. A deterministic sketch uses document identity, headings, inverse-document-frequency terms and salient original sentences. Highly repeated, nonnumeric margin lines are excluded only from sketches. Original passages, numerical values and dates remain intact. Sketches consume no LLM calls.
+```
+INDEX (POST /index)
+ PDF ─▶ PyMuPDF layout blocks ──(page has no text)──▶ PaddleOCR PP-OCRv5 lines → paragraphs
+     ─▶ drop repeated headers/footers, page numbers, TOC dot leaders
+     ─▶ headings (font size / bold + PDF outline) give every unit a section path
+     ─▶ paragraph units: 60–220 words, never crossing a page or section
+     ─▶ document profile (LLM, one call per document): title, issuer, type, period,
+        jurisdiction, summary, topics, "what distinguishes it from similar documents"
+     ─▶ embeddings (BGE, with "title | section" header) + BM25 over the same text
 
-Local sentence-transformer embeddings are stored in NumPy arrays, an exact vector index appropriate for this corpus size. Large inputs are embedded in model-length windows and their vectors averaged and normalized. SQLite caches exact embedding inputs by backend/model identity and content hash. Different sketch metadata gets a different embedding key. Duplicate inputs share computation, while every chunk retains its own source identity. BM25 postings index original passage text.
+QUERY (POST /query)
+ 1 query_planning        LLM reads the compact catalog: picks the documents (entity / period / version)
+                         and splits the question into 2–8 aspects with document-style search queries
+ 2 candidate_retrieval   dense+BM25 fusion for the question and for every aspect, restricted to the
+                         routed documents; adjacent same-section paragraphs of top hits; a per-document
+                         quota (≤ 240 candidates)
+ 3 evidence_judgement    LLM judges candidates in parallel batches of 30: relevant only if a complete
+                         answer would use it (right entity, period and topic); tags supported aspects
+ 4 coverage_recovery     aspects with no accepted evidence get one deeper scoped search + judging
+ 5 evidence_assembly     accepted units, ordered by document and page, within the context budget
+ 6 llm_answer_generation structured analyst answer from the evidence only, every line cites [E#]
+ 7 answer_verification   lines with figures absent from the evidence are removed; [E#] becomes
+                         [document, p.N]
+ → answer, chunks (all accepted evidence, with document, page, section, cited flag), trace
+```
 
-Each collection has immutable version directories containing JSON metadata, BM25 postings, compressed vector arrays, and original PDF bytes. Publishing a new `CURRENT` pointer is atomic; failed indexing preserves the previous generation. Readers invalidate their in-memory cache when the pointer changes. Old snapshots are retained for recovery and require explicit operator cleanup. Cache databases are shared computation stores; retrieval always reads collection-scoped snapshots, so a cache hit cannot expose another collection's evidence.
+## Why each piece exists
 
-## Query processing
+| Failure mode | Mechanism |
+|---|---|
+| Near-duplicate documents (same issuer, different year/version) | Planner routes on an LLM-built catalog with an explicit "distinguishing" field; the judge rejects passages from the wrong entity or period; units embed their document title |
+| Answer spread over many pages | Aspect decomposition retrieves each part separately; neighbour expansion pulls continuation paragraphs; per-document quotas; the returned set size follows the evidence, not k |
+| Irrelevant chunks lowering context precision | Every returned chunk passed the judge, which mirrors the evaluator's relevance question |
+| Chunk granularity | Paragraph units sized like the gold chunks, so relevant evidence is counted at the same grain |
+| Wrong-but-confident figures | Answer uses only evidence; any line with a number that appears in no evidence passage is removed |
+| Extra or missing answer points | Prompt requires covering every part with specific figures, and forbids outside knowledge, generic caveats and advice |
+| Scanned PDFs | PaddleOCR fallback per page, cached by PDF hash, page and DPI |
 
-1. Classify the question using deterministic rules.
-2. Route by company aliases, reporting end-year and document type. Multiple matches remain eligible; missing metadata or absent requested years broaden the search and appear in the trace. These rules are heuristics and can misidentify ambiguous entities.
-3. Search either full-chunk or sketch vectors. Optionally combine original-text BM25 with reciprocal-rank fusion.
-4. For broad questions, derive evidence requirements from question clauses and relevant document headings. Comparison questions can also require evidence from each candidate document. Independently retrieve section candidates, merge them, and perform bounded BM25 follow-ups for unmet requirements. The planner has no list of predefined financial risks and never reads benchmark answers.
-5. Greedily select evidence using normalized relevance, new requirement coverage, new terms, redundancy and token cost. Documents and financial values are protected from unsafe deduplication. Source references from exact duplicate passages are retained. Full passages must fit the context budget; they are never truncated to fit.
-6. Give the answer model original passages and citation IDs. Validate citation identifiers, paragraph citation presence, and whether stated numbers occur in cited evidence. A failed check causes abstention. This does not prove semantic entailment; supported numbers can still be misinterpreted, and valid derived calculations may be rejected.
+Vector search is used, but only inside the routed scope and only to propose candidates. Inclusion is
+decided by the judge, and the final set size depends on the evidence.
 
-The architectural distinction from ordinary hybrid RAG is the document identity layer plus an explicit, bounded evidence-coverage plan. It addresses which report and which sections must supply evidence before final selection. Coverage is heuristic, not a guarantee that every relevant page has been found. The default 12 requirements and 24 broad-query passages will not necessarily cover questions whose gold evidence spans hundreds of passages.
+## Cost and latency per query
 
-## Measurement and limits
+With the LLM backend: 1 planning call, ⌈candidates / 30⌉ judge calls (usually 4–8, run in parallel,
+`KB_LLM_CONCURRENCY`), at most one recovery judge round, and 1 answer call. Judge prompts carry about
+80–100 words per candidate, so a broad question uses roughly 25–40k judge input tokens. Set
+`LLM_FAST_MODEL` to a cheaper model (or a comma-separated pool) for planning, profiling and judging. Every stage reports its
+latency and token usage in `statistics.stages`, the trace, and Langfuse (generation observations with
+usage and configured cost).
 
-The baseline uses fixed page-aware chunks, full embeddings, vector top-k and the same answer model, prompt, temperature and validation. Ablations independently enable routing, sketches/BM25, multi-section retrieval and coverage selection. D/F can use a larger passage budget than A/B/C/E; reports explicitly disclose that difference. A comparison with a matched larger baseline budget is an important next experiment.
+To trade accuracy for cost, lower `KB_MAX_CANDIDATES` and `KB_ASPECT_QUERY_K`. To raise recall on very broad
+questions, raise them.
 
-Embedding token counts use the embedding model tokenizer with window special tokens. Context packing uses a lexical token estimate, not the answer model tokenizer. Provider usage is used for actual answer input/output tokens when available; otherwise counts are marked estimated. Prices must be configured; unknown costs remain null. Local embedding API charges are zero, but local compute is not free and is not priced by this harness. Comparison-mode indexing builds both representations and therefore costs more work than either representation alone.
+## Storage and safety
 
-Langfuse wraps query, retrieval and generation operations, recording usage and configured API cost. A local JSONL ledger records indexing/query statistics and failures even without credentials. Official judge calls are a separate evaluation expense; the unchanged notebook does not expose judge token usage. No answer precision/recall or official context precision/recall is claimed without executing that notebook with credentials.
+Each collection has immutable version directories (JSON metadata, BM25 postings, NumPy vectors, original
+PDFs) published by an atomic `CURRENT` pointer; a failed re-index keeps the previous version. The
+embedding and OCR caches are keyed by content hash and model identity and are shared across collections;
+retrieval only reads the collection's own snapshot. ZIP validation rejects traversal, symlinks, duplicate
+paths and oversized archives. Document text reaches the LLM as quoted data and every prompt says it is
+never instructions.
 
-Known limitations include English-only MiniLM embeddings, heuristic metadata/section extraction, no OCR, approximate token packing, lexical requirement coverage, no calibrated relevance/abstention model, and no production authentication/rate limiting. Deploy behind the organizer's access-controlled gateway. No server credentials were provided, so deployment is supplied as commands and a Dockerfile rather than a claimed live service.
+## Offline mode and limits
+
+`KB_LLM_BACKEND=offline` replaces planning with filename/cover-date routing, judging with the top
+`KB_OFFLINE_EVIDENCE` ranked candidates, and the answer with an extractive list. It exists for tests and
+retrieval diagnostics. It is not the scored configuration.
+
+Limits: the judge and the answer model can still be wrong; figure verification checks presence, not
+meaning; tables are kept as text blocks rather than reconstructed; OCR runs about 2–17 s per page on CPU.
+No official scores are claimed until the unchanged evaluator is run with credentials.

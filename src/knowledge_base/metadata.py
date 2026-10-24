@@ -121,16 +121,6 @@ def document_metadata(filename, cover_text):
     }
 
 
-def page_heading(text, fallback):
-    for line in text.splitlines()[:16]:
-        line = line.strip()
-        words = line.split()
-        if 2 <= len(words) <= 12 and not re.search(r"\d{2,}|https?://|\.{3}", line):
-            if line.isupper() or re.match(r"^\d{1,2}[.)]\s+[A-Z]", line):
-                return line
-    return fallback
-
-
 def route(question, documents):
     query_terms = set(terms(question))
     requested = periods(question)
