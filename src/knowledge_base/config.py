@@ -12,6 +12,10 @@ class Settings:
     embedding_backend: str = "sentence-transformers"
     embedding_model: str = "BAAI/bge-small-en-v1.5"
     embedding_query_prefix: str = "Represent this sentence for searching relevant passages: "
+    # qdrant: embedded Qdrant (or a server at qdrant_url) with document filters; numpy: in-process matrix.
+    vector_store: str = "qdrant"
+    qdrant_url: str = ""
+    qdrant_api_key: str = ""
     # opencode runs profiling, query analysis, evidence judging and answers; offline uses rules.
     llm_backend: str = "llm"
     ocr_backend: str = "paddle"
@@ -55,6 +59,8 @@ class Settings:
             raise ValueError("Unsupported embedding backend")
         if self.llm_backend not in {"offline", "llm", "opencode"}:
             raise ValueError("llm_backend must be llm (alias opencode) or offline")
+        if self.vector_store not in {"qdrant", "numpy"}:
+            raise ValueError("vector_store must be qdrant or numpy")
         if self.section_mode not in {"merged", "pages"}:
             raise ValueError("section_mode must be merged or pages")
         if self.ocr_backend not in {"none", "paddle"}:

@@ -3,6 +3,7 @@
 import numpy as np
 
 from .search import GroupedBM25, rank
+from .vectorstore import NumpyStore
 
 
 def unit_search_text(chunk, title):
@@ -11,14 +12,21 @@ def unit_search_text(chunk, title):
 
 
 class CandidateSearch:
-    def __init__(self, chunks, unit_vectors, bm25, embedder, settings):
+    def __init__(self, chunks, unit_vectors, bm25, embedder, settings, stores=None, collection="", generation=""):
         self.chunks = chunks
         self.vectors = unit_vectors
         self.bm25 = bm25
         self.embedder = embedder
         self.settings = settings
+        self.stores, self.collection, self.generation = stores, collection, generation
         self.document_ids = np.array([c["document_id"] for c in chunks])
+        self.unit_store = self._store("units", unit_vectors, self.document_ids)
         self._build_sections()
+
+    def _store(self, kind, vectors, document_ids, variant=""):
+        if self.stores is None:
+            return NumpyStore(vectors, document_ids)
+        return self.stores.create(kind, self.collection, self.generation, vectors, document_ids, variant)
 
     def _section_starts(self):
         """Coarse sections in document order. Detected headings are too fine (median one paragraph), so
@@ -50,12 +58,15 @@ class CandidateSearch:
         centroids = np.add.reduceat(self.vectors, self.section_starts, axis=0)
         self.section_vectors = centroids / np.maximum(np.linalg.norm(centroids, axis=1, keepdims=True), 1e-12)
         self.section_bm25 = GroupedBM25(self.bm25, self.section_of_unit, len(starts))
+        s = self.settings
+        variant = f"{s.section_mode}:{s.section_min_units}:{s.section_cap_units}:{s.section_pages}"
+        self.section_store = self._store("sections", self.section_vectors, self.section_docs, variant)
 
     def _sections(self, text, vector, dense, sparse, document_ids):
         """Pick whole sections for one query, then their units (capped to the best-matching ones)."""
         s = self.settings
         allowed = np.isin(self.section_docs, list(document_ids))
-        chosen = rank(self.section_vectors @ vector, self.section_bm25.scores(text), allowed,
+        chosen = rank(self.section_store.dense(vector, document_ids), self.section_bm25.scores(text), allowed,
                       s.sections_per_query, depth=50)
         picked = []
         top = max(float(sparse.max()), 1e-9)
@@ -93,7 +104,7 @@ class CandidateSearch:
         # instead of hoping chunk-level hits land on every relevant paragraph.
         use_sections = s.section_retrieval and plan.get("breadth") != "narrow"
         for (name, text, limit), vector in zip(queries, vectors):
-            dense = self.vectors @ vector
+            dense = self.unit_store.dense(vector, plan["document_ids"])
             sparse = self.bm25.scores(text)
             if name == "question":
                 main_scores = (dense, sparse)
@@ -126,12 +137,13 @@ class CandidateSearch:
             for index, score in rank(dense, sparse, doc_mask, s.per_document_k, depth=100):
                 found.setdefault(index, {"index": index, "score": score, "queries": ["per_document"]})
         ranked = sorted(found.values(), key=lambda c: (-c["score"], c["index"]))[: s.max_candidates]
-        return ranked, {"searches": searches, "candidates": len(ranked), "allowed_units": int(allowed.sum())}, usage
+        return ranked, {"searches": searches, "candidates": len(ranked), "allowed_units": int(allowed.sum()),
+                        "vector_store": self.unit_store.name}, usage
 
     def deeper(self, text, document_ids, exclude, k):
         """Bounded recovery search for one uncovered aspect, skipping already-judged units."""
         allowed = self.mask(document_ids)
         vectors, usage = self.embedder.encode_queries([text])
-        dense = self.vectors @ vectors[0]
+        dense = self.unit_store.dense(vectors[0], document_ids)
         ranked = rank(dense, self.bm25.scores(text), allowed, k + len(exclude), depth=200)
         return [i for i, _ in ranked if i not in exclude][:k], usage

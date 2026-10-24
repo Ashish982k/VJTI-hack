@@ -10,7 +10,7 @@ requires-python = ">=3.10"
 dependencies = [
   "fastapi>=0.115,<1", "uvicorn>=0.30,<1", "python-multipart>=0.0.18",
   "pymupdf>=1.24,<2", "numpy>=1.26,<3", "httpx>=0.27,<1",
-  "python-dotenv>=1,<2", "requests>=2.32,<3",
+  "python-dotenv>=1,<2", "requests>=2.32,<3", "qdrant-client>=1.12,<2",
 ]
 
 [project.optional-dependencies]

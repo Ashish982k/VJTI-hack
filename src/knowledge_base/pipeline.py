@@ -21,6 +21,7 @@ from .search import BM25
 from .storage import Store, validate_collection
 from .telemetry import Telemetry, estimate_cost
 from .text import digest, tokens
+from .vectorstore import StoreFactory
 
 SCHEMA_VERSION = 2
 
@@ -39,6 +40,7 @@ class KnowledgeBase:
         self.cache = {}
         self.lock = RLock()
         self._ocr = None
+        self.stores = StoreFactory(self.settings)
 
     @property
     def ocr(self):
@@ -98,6 +100,10 @@ class KnowledgeBase:
             "settings": self.settings.json(),
         }
         self.store.save(collection, payload, {"units": vectors}, raw)
+        # Build the vector store (Qdrant collections) now, so the collection is queryable when /index returns.
+        self.load(collection)
+        stats["vector_store"] = self.settings.vector_store
+        stats["indexing_seconds"] = time.perf_counter() - started
         stats["estimated_cost"] = estimate_cost(stats, self.settings.embedding_backend)
         self.telemetry.record({"operation": "index", "collection": collection, "statistics": stats})
         return {"status": "success", "collection_name": collection, "documents_indexed": len(metadata),
@@ -114,7 +120,8 @@ class KnowledgeBase:
                 if payload["embedding_identity"] != self.embedder.identity:
                     raise ValueError("Embedding configuration differs from index; reindex the collection")
                 search = CandidateSearch(
-                    payload["chunks"], vectors["units"], BM25(payload["bm25"]), self.embedder, self.settings
+                    payload["chunks"], vectors["units"], BM25(payload["bm25"]), self.embedder, self.settings,
+                    self.stores, collection, generation,
                 )
                 cached = (generation, payload, search)
                 self.cache[collection] = cached

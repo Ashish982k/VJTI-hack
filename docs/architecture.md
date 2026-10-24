@@ -22,7 +22,8 @@ INDEX (POST /index)
      ─▶ paragraph units: 60–220 words, never crossing a page or section
      ─▶ document profile (LLM, one call per document): title, issuer, type, period,
         jurisdiction, summary, topics, "what distinguishes it from similar documents"
-     ─▶ embeddings (BGE, with "title | section" header) + BM25 over the same text
+     ─▶ embeddings (BGE, with "title | section" header) stored in Qdrant, one collection per
+        document (routing = which collections to search) + BM25 over the same text
 
 QUERY (POST /query)
  1 query_planning        LLM reads the compact catalog: picks the documents (entity / period / version)
@@ -69,8 +70,10 @@ questions, raise them.
 
 ## Storage and safety
 
-Each collection has immutable version directories (JSON metadata, BM25 postings, NumPy vectors, original
-PDFs) published by an atomic `CURRENT` pointer; a failed re-index keeps the previous version. The
+Each collection has immutable version directories (JSON metadata, BM25 postings, saved vectors, original
+PDFs) published by an atomic `CURRENT` pointer. Vectors are served from Qdrant: embedded in the API process
+by default (rebuilt from the saved vectors on load, about 3 s for 36,000 paragraphs), or a Qdrant server via
+`KB_QDRANT_URL`. Search is exact cosine, identical to a brute-force scan (verified on 54 saved query plans); a failed re-index keeps the previous version. The
 embedding and OCR caches are keyed by content hash and model identity and are shared across collections;
 retrieval only reads the collection's own snapshot. ZIP validation rejects traversal, symlinks, duplicate
 paths and oversized archives. Document text reaches the LLM as quoted data and every prompt says it is

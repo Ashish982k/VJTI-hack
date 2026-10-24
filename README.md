@@ -5,7 +5,7 @@ judge-filtered evidence retrieval**. Source PDFs and benchmark data stay in `Tra
 excluded from Git, as are secrets, models and generated indexes.
 
 ```
-PDF → paragraph units (+ PaddleOCR for scanned pages) → LLM document catalog
+PDF → paragraph units (+ PaddleOCR for scanned pages) → LLM document catalog → Qdrant + BM25
 query → plan (documents + aspects) → scoped dense+BM25 candidates → LLM evidence judge
       → bounded coverage recovery → cited analyst answer → figure verification
 ```
@@ -68,6 +68,8 @@ sees fewer passages than with a paid provider. The official evaluator itself sti
 | `LLM_MODEL` / `LLM_FAST_MODEL` | `deepseek-v4.1-flash` / same | Answer model / cheaper model for profiling, planning and judging. Comma-separated lists rotate and skip rate-limited models |
 | `KB_OCR_BACKEND` | `paddle` | `none` skips scanned pages |
 | `KB_EMBEDDING_MODEL` | `BAAI/bge-small-en-v1.5` | Local embedding model (`KB_EMBEDDING_BACKEND=hash` for tests) |
+| `KB_VECTOR_STORE` | `qdrant` | Vector database: embedded Qdrant (one collection per document, exact cosine), or `numpy` |
+| `KB_QDRANT_URL` / `KB_QDRANT_API_KEY` | empty | Use a Qdrant server instead of embedded mode (e.g. `http://localhost:6333`); collections persist across restarts |
 | `KB_UNIT_MIN_WORDS` / `KB_UNIT_MAX_WORDS` | `60` / `220` | Paragraph unit size (re-index after changing) |
 | `KB_MAX_DOCUMENTS` | `8` | Documents the planner may route to |
 | `KB_MAIN_QUERY_K` / `KB_ASPECT_QUERY_K` / `KB_PER_DOCUMENT_K` | `40` / `20` / `8` | Candidate depth for the question, each aspect, each routed document |
